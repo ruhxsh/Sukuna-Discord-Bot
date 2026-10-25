@@ -224,6 +224,43 @@ function normalizeAnimeReplies(raw) {
   return replies;
 }
 
+function normalizeInteractionCounts(raw) {
+  if (!isRecord(raw)) return {};
+
+  const counts = {};
+  for (const [guildId, byGuild] of Object.entries(raw)) {
+    if (!isSnowflake(guildId) || !isRecord(byGuild)) continue;
+    const guildCounts = {};
+    for (const [pairKey, byPair] of Object.entries(byGuild)) {
+      if (!isRecord(byPair)) continue;
+      const [actorId, targetId] = pairKey.split(":");
+      if (!actorId || !targetId || !isSnowflake(actorId) || !isSnowflake(targetId)) {
+        continue;
+      }
+      const pairCounts = {};
+      for (const [action, value] of Object.entries(byPair)) {
+        if (
+          typeof action === "string" &&
+          /^[a-z]{2,20}$/.test(action) &&
+          typeof value === "number" &&
+          Number.isFinite(value) &&
+          value >= 0
+        ) {
+          pairCounts[action] = Math.floor(value);
+        }
+      }
+      if (Object.keys(pairCounts).length > 0) {
+        guildCounts[pairKey] = pairCounts;
+      }
+    }
+    if (Object.keys(guildCounts).length > 0) {
+      counts[guildId] = guildCounts;
+    }
+  }
+
+  return counts;
+}
+
 function normalizeDivorceConfirmations(raw) {
   if (!Array.isArray(raw)) return [];
 
@@ -289,6 +326,7 @@ export function normalizeStoreData(raw) {
     marriageProposals: normalizeMarriageProposals(raw.marriageProposals),
     animeReplies: normalizeAnimeReplies(raw.animeReplies),
     divorceConfirmations: normalizeDivorceConfirmations(raw.divorceConfirmations),
+    interactionCounts: normalizeInteractionCounts(raw.interactionCounts),
   };
 }
 
@@ -320,6 +358,7 @@ export class JsonStore {
       marriageProposals: [],
       animeReplies: [],
       divorceConfirmations: [],
+      interactionCounts: {},
     };
     this.saveQueue = Promise.resolve();
   }
@@ -345,6 +384,7 @@ export class JsonStore {
           marriageProposals: [],
           animeReplies: [],
           divorceConfirmations: [],
+          interactionCounts: {},
         };
         return this;
       }
@@ -832,6 +872,34 @@ export class JsonStore {
     confirmation.status = "confirmed";
     await this.save();
     return { ok: true, decision };
+  }
+
+  getInteractionCount(guildId, actorId, targetId, action) {
+    if (![guildId, actorId, targetId].every(isSnowflake) || actorId === targetId) {
+      throw new Error("Invalid interaction count lookup.");
+    }
+    if (typeof action !== "string" || !/^[a-z]{2,20}$/.test(action)) {
+      throw new Error("Invalid interaction action.");
+    }
+    const pairKey = `${actorId}:${targetId}`;
+    return this.data.interactionCounts[guildId]?.[pairKey]?.[action] ?? 0;
+  }
+
+  async incrementInteractionCount(guildId, actorId, targetId, action) {
+    if (![guildId, actorId, targetId].every(isSnowflake) || actorId === targetId) {
+      throw new Error("Invalid interaction count record.");
+    }
+    if (typeof action !== "string" || !/^[a-z]{2,20}$/.test(action)) {
+      throw new Error("Invalid interaction action.");
+    }
+
+    const pairKey = `${actorId}:${targetId}`;
+    this.data.interactionCounts[guildId] ??= {};
+    this.data.interactionCounts[guildId][pairKey] ??= {};
+    this.data.interactionCounts[guildId][pairKey][action] ??= 0;
+    this.data.interactionCounts[guildId][pairKey][action] += 1;
+    await this.save();
+    return this.data.interactionCounts[guildId][pairKey][action];
   }
 
   async save() {

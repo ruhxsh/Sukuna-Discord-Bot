@@ -199,6 +199,9 @@ function makeInteractionMessage({ authorId, targetMember = null, targetUser = nu
 
 function makeFakeAnimeReplyStore() {
   const records = new Map();
+  const counts = new Map();
+  const countKey = (guildId, actorId, targetId, action) =>
+    `${guildId}:${actorId}:${targetId}:${action}`;
   return {
     records,
     async createAnimeReply(record) {
@@ -215,6 +218,15 @@ function makeFakeAnimeReplyStore() {
     },
     async removeAnimeReply(id) {
       return records.delete(id);
+    },
+    getInteractionCount(guildId, actorId, targetId, action) {
+      return counts.get(countKey(guildId, actorId, targetId, action)) ?? 0;
+    },
+    async incrementInteractionCount(guildId, actorId, targetId, action) {
+      const key = countKey(guildId, actorId, targetId, action);
+      const next = (counts.get(key) ?? 0) + 1;
+      counts.set(key, next);
+      return next;
     },
   };
 }

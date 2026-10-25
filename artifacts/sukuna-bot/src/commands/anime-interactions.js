@@ -17,12 +17,14 @@ const ACTIONS = {
   hug: {
     title: "Hug",
     replyLabel: "Hug back",
+    pastTense: "hugged",
     text: (actorId, targetId) => `<@${actorId}> gives <@${targetId}> a warm hug!`,
     needsTarget: true,
   },
   kiss: {
     title: "Kiss",
     replyLabel: "Kiss back",
+    pastTense: "kissed",
     text: (actorId, targetId) =>
       `<@${actorId}> gives <@${targetId}> a sweet, cute kiss!`,
     needsTarget: true,
@@ -30,18 +32,21 @@ const ACTIONS = {
   pat: {
     title: "Pat",
     replyLabel: "Pat back",
+    pastTense: "patted",
     text: (actorId, targetId) => `<@${actorId}> gives <@${targetId}> a gentle head pat!`,
     needsTarget: true,
   },
   cuddle: {
     title: "Cuddle",
     replyLabel: "Cuddle back",
+    pastTense: "cuddled",
     text: (actorId, targetId) => `<@${actorId}> cuddles up with <@${targetId}>!`,
     needsTarget: true,
   },
   punch: {
     title: "Playful punch",
     replyLabel: "Punch back",
+    pastTense: "punched",
     text: (actorId, targetId) =>
       `<@${actorId}> lands a playful anime punch on <@${targetId}>!`,
     needsTarget: true,
@@ -49,6 +54,7 @@ const ACTIONS = {
   slap: {
     title: "Comedic slap",
     replyLabel: "Slap back",
+    pastTense: "slapped",
     text: (actorId, targetId) =>
       `<@${actorId}> gives <@${targetId}> a silly, over-the-top anime slap!`,
     needsTarget: true,
@@ -56,30 +62,35 @@ const ACTIONS = {
   poke: {
     title: "Poke",
     replyLabel: "Poke back",
+    pastTense: "poked",
     text: (actorId, targetId) => `<@${actorId}> pokes <@${targetId}>!`,
     needsTarget: true,
   },
   wave: {
     title: "Wave",
     replyLabel: "Wave back",
+    pastTense: "waved",
     text: (actorId, targetId) => `<@${actorId}> waves to <@${targetId}>!`,
     needsTarget: true,
   },
   highfive: {
     title: "High five",
     replyLabel: "High-five back",
+    pastTense: "high-fived",
     text: (actorId, targetId) => `<@${actorId}> high-fives <@${targetId}>!`,
     needsTarget: true,
   },
   bite: {
     title: "Playful bite",
     replyLabel: "Bite back",
+    pastTense: "bitten",
     text: (actorId, targetId) =>
       `<@${actorId}> gives <@${targetId}> a playful anime bite!`,
     needsTarget: true,
   },
   dance: {
     title: "Dance",
+    pastTense: "danced",
     text: (actorId) => `<@${actorId}> breaks into an anime dance!`,
     needsTarget: false,
   },
@@ -121,14 +132,19 @@ function assertAnimeChannel(guild, channel) {
   );
 }
 
-function createAnimePayload(actionName, actorId, targetId, image, replyId = null) {
+function buildCountFooter(actorName, pastTense, targetName, count) {
+  const times = count === 1 ? "time" : "times";
+  return `${actorName} has ${pastTense} ${targetName} ${count} ${times}.`;
+}
+
+function createAnimePayload(actionName, actorId, targetId, image, replyId = null, footerText = null) {
   const action = ACTIONS[actionName];
   const embed = new EmbedBuilder()
     .setColor(0x7c3aed)
     .setTitle(action.title)
     .setDescription(action.text(actorId, targetId))
     .setImage(image.url);
-  if (image.anime) embed.setFooter({ text: `Anime: ${image.anime}` });
+  if (footerText) embed.setFooter({ text: footerText });
 
   const payload = {
     embeds: [embed],
@@ -158,7 +174,9 @@ export async function sendAnimeInteractionMessage({
   channel,
   command,
   actorId,
+  actorName,
   targetId = null,
+  targetName = null,
   store,
   gifFetcher = fetchAnimeGif,
   send,
@@ -175,10 +193,14 @@ export async function sendAnimeInteractionMessage({
   assertAnimeChannel(guild, channel);
   const image = await gifFetcher(command);
   let replyRecord = null;
+  let footerText = null;
 
   if (targetId) {
     if (!store?.createAnimeReply || !store?.setAnimeReplyMessage) {
       throw new Error("Anime reply buttons are unavailable right now.");
+    }
+    if (!store?.incrementInteractionCount || !store?.getInteractionCount) {
+      throw new Error("Interaction counts are unavailable right now.");
     }
     replyRecord = await store.createAnimeReply({
       guildId: guild.id,
@@ -188,11 +210,13 @@ export async function sendAnimeInteractionMessage({
       targetId,
       expiresAt: new Date(Date.now() + ANIME_REPLY_TTL_MS).toISOString(),
     });
+    const count = await store.incrementInteractionCount(guild.id, actorId, targetId, command);
+    footerText = buildCountFooter(actorName, action.pastTense, targetName, count);
   }
 
   try {
     const sent = await send(
-      createAnimePayload(command, actorId, targetId, image, replyRecord?.id ?? null),
+      createAnimePayload(command, actorId, targetId, image, replyRecord?.id ?? null, footerText),
     );
     if (replyRecord && sent?.id) {
       try {
@@ -241,13 +265,20 @@ export async function handleAnimeInteraction(
     }
   }
 
+  const actorName =
+    message.member?.displayName ?? message.author?.globalName ?? message.author?.username ?? actorId;
+  const targetName =
+    target?.displayName ?? target?.user?.globalName ?? target?.user?.username ?? target?.id ?? null;
+
   try {
     await sendAnimeInteractionMessage({
       guild: message.guild,
       channel: message.channel,
       command,
       actorId: message.author.id,
+      actorName,
       targetId: target?.id ?? null,
+      targetName,
       store,
       gifFetcher,
       send: (payload) => message.reply(payload),
@@ -351,13 +382,32 @@ export async function handleAnimeReplyButton(
     logError(error, "Could not disable a used anime reply button");
   }
 
+  const replyActorName =
+    interaction.member?.displayName ??
+    interaction.user?.globalName ??
+    interaction.user?.username ??
+    interaction.user.id;
+  let originalActorName = result.reply.actorId;
+  try {
+    const originalMember = await interaction.guild.members.fetch(result.reply.actorId);
+    originalActorName =
+      originalMember.displayName ??
+      originalMember.user?.globalName ??
+      originalMember.user?.username ??
+      result.reply.actorId;
+  } catch {
+    // member may have left the guild; fall back to the stored id
+  }
+
   try {
     await sendAnimeInteractionMessage({
       guild: interaction.guild,
       channel: interaction.channel,
       command: result.reply.action,
       actorId: interaction.user.id,
+      actorName: replyActorName,
       targetId: result.reply.actorId,
+      targetName: originalActorName,
       store,
       gifFetcher,
       send: (payload) => interaction.channel.send(payload),
