@@ -1,6 +1,7 @@
 import { sendBotErrorLog, logError } from "./logging.js";
 import { UserFacingError } from "./permissions.js";
 import { handleModeration } from "./commands/moderation.js";
+import { handleAnimeInteraction } from "./commands/anime-interactions.js";
 import { handleRoleButton, handleRoleManagement } from "./commands/roles.js";
 import { handleUtility } from "./commands/utility.js";
 
@@ -42,7 +43,8 @@ export async function handleMessage(message, client, store) {
     const handled =
       (await handleModeration(message, parsed.command, parsed.args, store)) ||
       (await handleRoleManagement(message, parsed.command, store)) ||
-      (await handleUtility(message, parsed.command, parsed.args, client));
+      (await handleUtility(message, parsed.command, parsed.args, client)) ||
+      (await handleAnimeInteraction(message, parsed.command, client, store));
 
     if (!handled) {
       await replySafely(message, "Unknown command. Use `s help` to see the command list.");

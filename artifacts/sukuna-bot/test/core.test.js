@@ -4,6 +4,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { PermissionFlagsBits, PermissionsBitField } from "discord.js";
+import {
+  buildAnimeGifApiUrl,
+  DEFAULT_ANIME_GIF_API_BASE_URL,
+  fetchAnimeGif,
+  SUPPORTED_ANIME_GIF_ACTIONS,
+} from "../src/anime-gifs.js";
+import {
+  ANIME_INTERACTION_COMMANDS,
+  handleAnimeInteraction,
+} from "../src/commands/anime-interactions.js";
 import { handleMessage, parseCommand } from "../src/command-handler.js";
 import { safeErrorMessage } from "../src/logging.js";
 import { selfAssignableRoleProblem } from "../src/permissions.js";
@@ -12,6 +22,7 @@ import {
   normalizeStoreData,
   parseDuration,
 } from "../src/store.js";
+import { handleUtility } from "../src/commands/utility.js";
 
 const guildId = "10000000000000001";
 const userId = "20000000000000002";
@@ -40,6 +51,260 @@ test("s avatar is not accepted as an alias for s av", async () => {
 
   await handleMessage(message, {}, {});
   assert.match(replies[0].content, /Unknown command/);
+});
+
+test("all requested anime action commands map to documented GIF API actions", () => {
+  assert.deepEqual(ANIME_INTERACTION_COMMANDS, [
+    "hug",
+    "kiss",
+    "pat",
+    "cuddle",
+    "punch",
+    "slap",
+    "poke",
+    "wave",
+    "highfive",
+    "bite",
+    "dance",
+  ]);
+  assert.deepEqual(ANIME_INTERACTION_COMMANDS, SUPPORTED_ANIME_GIF_ACTIONS);
+  assert.equal(DEFAULT_ANIME_GIF_API_BASE_URL, "https://api.gifukai.com/v1");
+
+  for (const action of ANIME_INTERACTION_COMMANDS) {
+    assert.equal(
+      new URL(buildAnimeGifApiUrl(action)).pathname,
+      `/v1/${action}`,
+    );
+  }
+  assert.throws(() => buildAnimeGifApiUrl("not-an-action"), /Unsupported/);
+  assert.throws(
+    () => buildAnimeGifApiUrl("hug", "http://api.gifukai.com/v1"),
+    /HTTPS/,
+  );
+});
+
+test("GIF fetch validates metadata and confirms the image is reachable", async () => {
+  const calls = [];
+  const fetchImpl = async (url, options) => {
+    calls.push({ url, options });
+    if (options.method === "HEAD") {
+      return new Response(null, {
+        status: 200,
+        headers: { "content-type": "image/gif" },
+      });
+    }
+    return new Response(
+      JSON.stringify({
+        action: "hug",
+        anime: "Test Anime",
+        url: "https://cdn.gifukai.com/hug/sample.gif",
+        content_type: "image/gif",
+      }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+  };
+
+  const result = await fetchAnimeGif("hug", {
+    baseUrl: "https://api.gifukai.com/v1",
+    fetchImpl,
+  });
+
+  assert.equal(result.url, "https://cdn.gifukai.com/hug/sample.gif");
+  assert.equal(result.anime, "Test Anime");
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].url, "https://api.gifukai.com/v1/hug");
+  assert.equal(calls[0].options.headers.Accept, "application/json");
+  assert.equal(calls[1].options.method, "HEAD");
+});
+
+test("GIF fetch rejects untrusted image hosts and unavailable image files", async () => {
+  const apiResponse = (url) =>
+    new Response(
+      JSON.stringify({
+        action: "hug",
+        anime: "Test Anime",
+        url,
+        content_type: "image/gif",
+      }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+
+  await assert.rejects(
+    fetchAnimeGif("hug", {
+      baseUrl: "https://api.gifukai.com/v1",
+      fetchImpl: async () => apiResponse("https://untrusted.example/file.gif"),
+    }),
+    /unsupported image/,
+  );
+
+  let requestCount = 0;
+  await assert.rejects(
+    fetchAnimeGif("hug", {
+      baseUrl: "https://api.gifukai.com/v1",
+      fetchImpl: async () => {
+        requestCount += 1;
+        return requestCount === 1
+          ? apiResponse("https://cdn.gifukai.com/hug/missing.gif")
+          : new Response(null, { status: 404 });
+      },
+    }),
+    /not currently available/,
+  );
+});
+
+test("help includes every anime interaction command", async () => {
+  let helpEmbed;
+  await handleUtility(
+    {
+      reply: async (payload) => {
+        helpEmbed = payload.embeds[0];
+      },
+    },
+    "help",
+    [],
+    {},
+  );
+
+  const helpText = helpEmbed.data.fields.map((field) => field.value).join("\n");
+  for (const command of ANIME_INTERACTION_COMMANDS) {
+    assert.ok(helpText.includes(`s ${command}`), `${command} is listed in help`);
+  }
+});
+
+function makeInteractionMessage({ authorId, targetMember = null, targetUser = null } = {}) {
+  const replies = [];
+  return {
+    author: { id: authorId ?? "20000000000000002" },
+    mentions: {
+      members: { first: () => targetMember },
+      users: { first: () => targetUser },
+    },
+    reply: async (payload) => replies.push(payload),
+    replies,
+  };
+}
+
+test("target-required interactions explain missing, invalid, self, and bot targets", async () => {
+  let fetchCount = 0;
+  const gifFetcher = async () => {
+    fetchCount += 1;
+    return { url: "https://cdn.gifukai.com/hug/sample.gif", anime: "Test Anime" };
+  };
+  const store = {};
+  const client = { user: { id: "10000000000000001" } };
+
+  const missing = makeInteractionMessage();
+  await handleAnimeInteraction(missing, "hug", client, store, gifFetcher);
+  assert.match(missing.replies[0].content, /Usage: `s hug @user`/);
+
+  const invalid = makeInteractionMessage({
+    targetUser: { id: "30000000000000003" },
+  });
+  await handleAnimeInteraction(invalid, "pat", client, store, gifFetcher);
+  assert.match(invalid.replies[0].content, /member of this server/);
+
+  const botTarget = makeInteractionMessage({
+    targetMember: { id: client.user.id },
+  });
+  await handleAnimeInteraction(botTarget, "kiss", client, store, gifFetcher);
+  assert.match(botTarget.replies[0].content, /can't target myself/);
+
+  const selfTarget = makeInteractionMessage({
+    targetMember: { id: "20000000000000002" },
+  });
+  await handleAnimeInteraction(selfTarget, "slap", client, store, gifFetcher);
+  assert.match(selfTarget.replies[0].content, /another member/);
+  assert.equal(fetchCount, 0);
+});
+
+test("dance works without a target and mentions the performer", async () => {
+  const message = makeInteractionMessage();
+  message.guild = { members: { me: { permissions: { has: () => true } } } };
+  message.channel = {
+    isTextBased: () => true,
+    send: () => {},
+    permissionsFor: () => ({ has: () => true }),
+  };
+
+  await handleAnimeInteraction(
+    message,
+    "dance",
+    { user: { id: "10000000000000001" } },
+    {},
+    async () => ({
+      url: "https://cdn.gifukai.com/dance/sample.gif",
+      anime: "Test Anime",
+    }),
+  );
+
+  const payload = message.replies[0];
+  assert.equal(payload.embeds[0].data.image.url, "https://cdn.gifukai.com/dance/sample.gif");
+  assert.match(payload.embeds[0].data.description, /<@20000000000000002>/);
+  assert.deepEqual(payload.allowedMentions.users, ["20000000000000002"]);
+});
+
+test("a targeted interaction includes both mentions and the returned GIF", async () => {
+  const actorId = "20000000000000002";
+  const targetId = "30000000000000003";
+  const message = makeInteractionMessage({
+    authorId: actorId,
+    targetMember: { id: targetId },
+  });
+  message.guild = { members: { me: { permissions: { has: () => true } } } };
+  message.channel = {
+    isTextBased: () => true,
+    send: () => {},
+    permissionsFor: () => ({ has: () => true }),
+  };
+
+  await handleAnimeInteraction(
+    message,
+    "hug",
+    { user: { id: "10000000000000001" } },
+    {},
+    async (action) => ({
+      action,
+      url: "https://cdn.gifukai.com/hug/sample.gif",
+      anime: "Test Anime",
+    }),
+  );
+
+  const payload = message.replies[0];
+  assert.equal(payload.embeds[0].data.image.url, "https://cdn.gifukai.com/hug/sample.gif");
+  assert.match(payload.embeds[0].data.description, new RegExp(`<@${actorId}>`));
+  assert.match(payload.embeds[0].data.description, new RegExp(`<@${targetId}>`));
+  assert.deepEqual(payload.allowedMentions.users, [actorId, targetId]);
+});
+
+test("an unavailable GIF source produces no image embed", async () => {
+  const actorId = "20000000000000002";
+  const message = makeInteractionMessage({
+    authorId: actorId,
+    targetMember: { id: "30000000000000003" },
+  });
+  message.guild = {
+    id: "10000000000000001",
+    members: { me: { permissions: { has: () => true } } },
+    channels: { fetch: async () => null },
+  };
+  message.channel = {
+    isTextBased: () => true,
+    send: () => {},
+    permissionsFor: () => ({ has: () => true }),
+  };
+
+  await handleAnimeInteraction(
+    message,
+    "hug",
+    { user: { id: "10000000000000001" } },
+    { getGuildConfig: () => ({ modLogChannelId: null }) },
+    async () => {
+      throw new Error("Image service unavailable.");
+    },
+  );
+
+  assert.equal(message.replies[0].embeds, undefined);
+  assert.match(message.replies[0].content, /couldn't load that anime GIF/);
 });
 
 test("duration parser accepts valid units and enforces Discord's 28-day limit", () => {

@@ -1,0 +1,1 @@
+- [Anime GIF provider reliability](anime-gif-api.md) — verify both the API response and returned image URL; provider access can differ by environment.

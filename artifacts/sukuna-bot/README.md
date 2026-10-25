@@ -49,6 +49,17 @@ Role assignment and self-role setup require Manage Roles. Channel settings requi
 - `s announce message` — requires Manage Server
 - `s say message` — requires Manage Messages
 
+### Anime interactions
+
+- `s hug @user`, `s kiss @user`, `s pat @user`, `s cuddle @user`
+- `s punch @user`, `s slap @user`, `s poke @user`, `s bite @user`
+- `s wave @user`, `s highfive @user`
+- `s dance` — no target required
+
+These commands use the no-key [Gifukai anime GIF API](https://gifukai.com/docs); the GIF URL is retrieved when the command runs, checked, then displayed in Discord. If the service is unavailable, Sukuna sends an error instead of a broken or made-up image.
+
+The source can be changed with the non-secret `ANIME_GIF_API_BASE_URL` environment variable (default: `https://api.gifukai.com/v1`). The default source serves images from `cdn.gifukai.com`. If you change providers and its image CDN is on another host, set `ANIME_GIF_MEDIA_HOSTS` to a comma-separated allow-list of image hostnames.
+
 ## Saved data
 
 Sukuna writes server settings and warnings to `data/sukuna-data.json` in the project directory. Writes use a temporary file and rename so an interrupted write is less likely to damage saved data. The data file is excluded from Git. A malformed file is left untouched and reported instead of being silently replaced.

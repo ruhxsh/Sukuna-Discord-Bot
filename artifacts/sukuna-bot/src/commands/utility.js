@@ -45,6 +45,14 @@ const HELP_GROUPS = [
       "`s say message` — send a staff-only message",
     ],
   },
+  {
+    name: "Anime interactions",
+    commands: [
+      "`s hug @user` · `s kiss @user` · `s pat @user` · `s cuddle @user`",
+      "`s punch @user` · `s slap @user` · `s poke @user` · `s bite @user`",
+      "`s wave @user` · `s highfive @user` · `s dance`",
+    ],
+  },
 ];
 
 async function reply(message, content) {
