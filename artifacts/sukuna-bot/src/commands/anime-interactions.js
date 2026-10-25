@@ -266,7 +266,7 @@ export async function handleAnimeInteraction(
   }
 
   const actorName =
-    message.member?.displayName ?? message.author?.globalName ?? message.author?.username ?? actorId;
+    message.member?.displayName ?? message.author?.globalName ?? message.author?.username ?? message.author.id;
   const targetName =
     target?.displayName ?? target?.user?.globalName ?? target?.user?.username ?? target?.id ?? null;
 
