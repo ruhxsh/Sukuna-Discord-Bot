@@ -38,7 +38,21 @@ async function start() {
   });
 
   client.on(Events.InteractionCreate, (interaction) => {
-    void handleInteraction(interaction, store);
+    void handleInteraction(interaction, store, client);
+  });
+
+  client.on(Events.MessageDelete, (message) => {
+    void store
+      .cancelInteractionsForMessage(message.channelId, message.id)
+      .catch((error) => logError(error, "Could not cancel buttons for a deleted message"));
+  });
+
+  client.on("messageDeleteBulk", (messages) => {
+    void Promise.all(
+      [...messages.values()].map((message) =>
+        store.cancelInteractionsForMessage(message.channelId, message.id),
+      ),
+    ).catch((error) => logError(error, "Could not cancel buttons for deleted messages"));
   });
 
   client.on(Events.GuildMemberAdd, (member) => {

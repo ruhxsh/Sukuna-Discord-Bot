@@ -1,7 +1,14 @@
 import { sendBotErrorLog, logError } from "./logging.js";
 import { UserFacingError } from "./permissions.js";
 import { handleModeration } from "./commands/moderation.js";
-import { handleAnimeInteraction } from "./commands/anime-interactions.js";
+import {
+  handleAnimeInteraction,
+  handleAnimeReplyButton,
+} from "./commands/anime-interactions.js";
+import {
+  handleMarriageButton,
+  handleMarriageCommand,
+} from "./commands/marriage.js";
 import { handleRoleButton, handleRoleManagement } from "./commands/roles.js";
 import { handleUtility } from "./commands/utility.js";
 
@@ -44,6 +51,7 @@ export async function handleMessage(message, client, store) {
       (await handleModeration(message, parsed.command, parsed.args, store)) ||
       (await handleRoleManagement(message, parsed.command, store)) ||
       (await handleUtility(message, parsed.command, parsed.args, client)) ||
+      (await handleMarriageCommand(message, parsed.command, store)) ||
       (await handleAnimeInteraction(message, parsed.command, client, store));
 
     if (!handled) {
@@ -60,17 +68,23 @@ export async function handleMessage(message, client, store) {
   }
 }
 
-export async function handleInteraction(interaction, store) {
+export async function handleInteraction(interaction, store, client) {
   if (!interaction.isButton()) return;
 
   try {
-    await handleRoleButton(interaction, store);
+    await handleRoleButton(interaction, store) ||
+      await handleAnimeReplyButton(interaction, store, client) ||
+      await handleMarriageButton(interaction, store);
   } catch (error) {
     await sendBotErrorLog(interaction.guild, store, "Button interaction", error);
-    if (!interaction.replied && !interaction.deferred) {
-      await interaction
-        .reply({ content: "That action could not be completed. Try again later.", ephemeral: true })
-        .catch(() => {});
+    const response = {
+      content: "That action could not be completed. Try again later.",
+      ephemeral: true,
+    };
+    if (interaction.replied || interaction.deferred) {
+      await interaction.followUp(response).catch(() => {});
+    } else {
+      await interaction.reply(response).catch(() => {});
     }
   }
 }

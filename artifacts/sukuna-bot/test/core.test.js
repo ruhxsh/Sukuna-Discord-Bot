@@ -12,9 +12,15 @@ import {
 } from "../src/anime-gifs.js";
 import {
   ANIME_INTERACTION_COMMANDS,
+  handleAnimeReplyButton,
   handleAnimeInteraction,
 } from "../src/commands/anime-interactions.js";
-import { handleMessage, parseCommand } from "../src/command-handler.js";
+import {
+  handleInteraction,
+  handleMessage,
+  parseCommand,
+} from "../src/command-handler.js";
+import { handleMarriageCommand } from "../src/commands/marriage.js";
 import { safeErrorMessage } from "../src/logging.js";
 import { selfAssignableRoleProblem } from "../src/permissions.js";
 import {
@@ -179,9 +185,83 @@ function makeInteractionMessage({ authorId, targetMember = null, targetUser = nu
       members: { first: () => targetMember },
       users: { first: () => targetUser },
     },
-    reply: async (payload) => replies.push(payload),
+    reply: async (payload) => {
+      replies.push(payload);
+      return {
+        id: "70000000000000007",
+        channelId,
+        channel: { id: channelId },
+      };
+    },
     replies,
   };
+}
+
+function makeFakeAnimeReplyStore() {
+  const records = new Map();
+  return {
+    records,
+    async createAnimeReply(record) {
+      const saved = { id: "anime-reply-record", ...record, messageId: null };
+      records.set(saved.id, saved);
+      return { ...saved };
+    },
+    async setAnimeReplyMessage(id, savedChannelId, messageId) {
+      const saved = records.get(id);
+      if (!saved) return false;
+      saved.channelId = savedChannelId;
+      saved.messageId = messageId;
+      return true;
+    },
+    async removeAnimeReply(id) {
+      return records.delete(id);
+    },
+  };
+}
+
+function makeButtonInteraction({
+  customId,
+  userId,
+  messageId = "70000000000000007",
+  interactionChannelId = channelId,
+} = {}) {
+  const calls = { replies: [], followUps: [], edits: [], sentMessages: [] };
+  const channel = {
+    id: interactionChannelId,
+    isTextBased: () => true,
+    permissionsFor: () => ({ has: () => true }),
+    send: async (payload) => {
+      calls.sentMessages.push(payload);
+      return {
+        id: "80000000000000008",
+        channelId: interactionChannelId,
+        channel,
+      };
+    },
+  };
+  const interaction = {
+    customId,
+    user: { id: userId },
+    guildId,
+    channelId: interactionChannelId,
+    message: { id: messageId },
+    guild: { id: guildId, members: { me: { permissions: { has: () => true } } } },
+    channel,
+    replied: false,
+    deferred: false,
+    inGuild: () => true,
+    isButton: () => true,
+    reply: async (payload) => {
+      calls.replies.push(payload);
+      interaction.replied = true;
+    },
+    deferUpdate: async () => {
+      interaction.deferred = true;
+    },
+    editReply: async (payload) => calls.edits.push(payload),
+    followUp: async (payload) => calls.followUps.push(payload),
+  };
+  return { interaction, calls };
 }
 
 test("target-required interactions explain missing, invalid, self, and bot targets", async () => {
@@ -250,18 +330,23 @@ test("a targeted interaction includes both mentions and the returned GIF", async
     authorId: actorId,
     targetMember: { id: targetId },
   });
-  message.guild = { members: { me: { permissions: { has: () => true } } } };
+  message.guild = {
+    id: guildId,
+    members: { me: { permissions: { has: () => true } } },
+  };
   message.channel = {
+    id: channelId,
     isTextBased: () => true,
     send: () => {},
     permissionsFor: () => ({ has: () => true }),
   };
+  const store = makeFakeAnimeReplyStore();
 
   await handleAnimeInteraction(
     message,
     "hug",
     { user: { id: "10000000000000001" } },
-    {},
+    store,
     async (action) => ({
       action,
       url: "https://cdn.gifukai.com/hug/sample.gif",
@@ -274,6 +359,10 @@ test("a targeted interaction includes both mentions and the returned GIF", async
   assert.match(payload.embeds[0].data.description, new RegExp(`<@${actorId}>`));
   assert.match(payload.embeds[0].data.description, new RegExp(`<@${targetId}>`));
   assert.deepEqual(payload.allowedMentions.users, [actorId, targetId]);
+  assert.equal(
+    payload.components[0].components[0].data.label,
+    "Hug back",
+  );
 });
 
 test("an unavailable GIF source produces no image embed", async () => {

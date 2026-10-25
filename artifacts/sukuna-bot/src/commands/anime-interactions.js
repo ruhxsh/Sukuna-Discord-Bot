@@ -1,62 +1,79 @@
-import { EmbedBuilder, PermissionFlagsBits } from "discord.js";
+import {
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  EmbedBuilder,
+  PermissionFlagsBits,
+} from "discord.js";
 import { fetchAnimeGif } from "../anime-gifs.js";
-import { sendBotErrorLog } from "../logging.js";
+import { logError, sendBotErrorLog } from "../logging.js";
 import {
   requireBotChannelPermission,
   requireTextChannel,
+  UserFacingError,
 } from "../permissions.js";
 
 const ACTIONS = {
   hug: {
     title: "Hug",
+    replyLabel: "Hug back",
     text: (actorId, targetId) => `<@${actorId}> gives <@${targetId}> a warm hug!`,
     needsTarget: true,
   },
   kiss: {
     title: "Kiss",
+    replyLabel: "Kiss back",
     text: (actorId, targetId) =>
       `<@${actorId}> gives <@${targetId}> a sweet, cute kiss!`,
     needsTarget: true,
   },
   pat: {
     title: "Pat",
+    replyLabel: "Pat back",
     text: (actorId, targetId) => `<@${actorId}> gives <@${targetId}> a gentle head pat!`,
     needsTarget: true,
   },
   cuddle: {
     title: "Cuddle",
+    replyLabel: "Cuddle back",
     text: (actorId, targetId) => `<@${actorId}> cuddles up with <@${targetId}>!`,
     needsTarget: true,
   },
   punch: {
     title: "Playful punch",
+    replyLabel: "Punch back",
     text: (actorId, targetId) =>
       `<@${actorId}> lands a playful anime punch on <@${targetId}>!`,
     needsTarget: true,
   },
   slap: {
     title: "Comedic slap",
+    replyLabel: "Slap back",
     text: (actorId, targetId) =>
       `<@${actorId}> gives <@${targetId}> a silly, over-the-top anime slap!`,
     needsTarget: true,
   },
   poke: {
     title: "Poke",
+    replyLabel: "Poke back",
     text: (actorId, targetId) => `<@${actorId}> pokes <@${targetId}>!`,
     needsTarget: true,
   },
   wave: {
     title: "Wave",
+    replyLabel: "Wave back",
     text: (actorId, targetId) => `<@${actorId}> waves to <@${targetId}>!`,
     needsTarget: true,
   },
   highfive: {
     title: "High five",
+    replyLabel: "High-five back",
     text: (actorId, targetId) => `<@${actorId}> high-fives <@${targetId}>!`,
     needsTarget: true,
   },
   bite: {
     title: "Playful bite",
+    replyLabel: "Bite back",
     text: (actorId, targetId) =>
       `<@${actorId}> gives <@${targetId}> a playful anime bite!`,
     needsTarget: true,
@@ -69,6 +86,7 @@ const ACTIONS = {
 };
 
 export const ANIME_INTERACTION_COMMANDS = Object.freeze(Object.keys(ACTIONS));
+const ANIME_REPLY_TTL_MS = 24 * 60 * 60 * 1_000;
 
 function getTarget(message) {
   const targetMember = message.mentions.members.first();
@@ -85,6 +103,111 @@ async function reply(message, content) {
     content,
     allowedMentions: { repliedUser: false, parse: [] },
   });
+}
+
+function assertAnimeChannel(guild, channel) {
+  requireTextChannel(channel);
+  requireBotChannelPermission(
+    guild,
+    channel,
+    PermissionFlagsBits.SendMessages,
+    "Send Messages",
+  );
+  requireBotChannelPermission(
+    guild,
+    channel,
+    PermissionFlagsBits.EmbedLinks,
+    "Embed Links",
+  );
+}
+
+function createAnimePayload(actionName, actorId, targetId, image, replyId = null) {
+  const action = ACTIONS[actionName];
+  const embed = new EmbedBuilder()
+    .setColor(0x7c3aed)
+    .setTitle(action.title)
+    .setDescription(action.text(actorId, targetId))
+    .setImage(image.url);
+  if (image.anime) embed.setFooter({ text: `Anime: ${image.anime}` });
+
+  const payload = {
+    embeds: [embed],
+    allowedMentions: {
+      repliedUser: false,
+      parse: [],
+      users: targetId ? [actorId, targetId] : [actorId],
+    },
+  };
+
+  if (replyId && targetId) {
+    payload.components = [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`sukuna:anime-reply:${replyId}`)
+          .setLabel(action.replyLabel)
+          .setStyle(ButtonStyle.Secondary),
+      ),
+    ];
+  }
+
+  return payload;
+}
+
+export async function sendAnimeInteractionMessage({
+  guild,
+  channel,
+  command,
+  actorId,
+  targetId = null,
+  store,
+  gifFetcher = fetchAnimeGif,
+  send,
+}) {
+  const action = ACTIONS[command];
+  if (!action) throw new Error("Unknown anime interaction.");
+  if (!guild || !channel || !actorId || typeof send !== "function") {
+    throw new Error("The anime interaction destination is unavailable.");
+  }
+  if (action.needsTarget && !targetId) {
+    throw new Error("This anime interaction requires a recipient.");
+  }
+
+  assertAnimeChannel(guild, channel);
+  const image = await gifFetcher(command);
+  let replyRecord = null;
+
+  if (targetId) {
+    if (!store?.createAnimeReply || !store?.setAnimeReplyMessage) {
+      throw new Error("Anime reply buttons are unavailable right now.");
+    }
+    replyRecord = await store.createAnimeReply({
+      guildId: guild.id,
+      channelId: channel.id,
+      action: command,
+      actorId,
+      targetId,
+      expiresAt: new Date(Date.now() + ANIME_REPLY_TTL_MS).toISOString(),
+    });
+  }
+
+  try {
+    const sent = await send(
+      createAnimePayload(command, actorId, targetId, image, replyRecord?.id ?? null),
+    );
+    if (replyRecord && sent?.id) {
+      try {
+        await store.setAnimeReplyMessage(replyRecord.id, channel.id, sent.id);
+      } catch (error) {
+        logError(error, "Could not save anime reply message ID");
+      }
+    }
+    return sent;
+  } catch (error) {
+    if (replyRecord && store.removeAnimeReply) {
+      await store.removeAnimeReply?.(replyRecord.id).catch(() => {});
+    }
+    throw error;
+  }
 }
 
 export async function handleAnimeInteraction(
@@ -119,28 +242,21 @@ export async function handleAnimeInteraction(
   }
 
   try {
-    requireTextChannel(message.channel);
-    requireBotChannelPermission(
-      message.guild,
-      message.channel,
-      PermissionFlagsBits.SendMessages,
-      "Send Messages",
-    );
-    requireBotChannelPermission(
-      message.guild,
-      message.channel,
-      PermissionFlagsBits.EmbedLinks,
-      "Embed Links",
-    );
+    await sendAnimeInteractionMessage({
+      guild: message.guild,
+      channel: message.channel,
+      command,
+      actorId: message.author.id,
+      targetId: target?.id ?? null,
+      store,
+      gifFetcher,
+      send: (payload) => message.reply(payload),
+    });
   } catch (error) {
-    await reply(message, error.message);
-    return true;
-  }
-
-  let image;
-  try {
-    image = await gifFetcher(command);
-  } catch (error) {
+    if (error instanceof UserFacingError) {
+      await reply(message, error.message);
+      return true;
+    }
     await sendBotErrorLog(message.guild, store, `Anime interaction: ${command}`, error);
     await reply(
       message,
@@ -149,23 +265,118 @@ export async function handleAnimeInteraction(
     return true;
   }
 
-  const description = action.text(message.author.id, target?.id);
-  const embed = new EmbedBuilder()
-    .setColor(0x7c3aed)
-    .setTitle(action.title)
-    .setDescription(description)
-    .setImage(image.url);
+  return true;
+}
 
-  if (image.anime) embed.setFooter({ text: `Anime: ${image.anime}` });
+async function privateReply(interaction, content) {
+  const payload = { content, ephemeral: true };
+  if (interaction.deferred || interaction.replied) {
+    await interaction.followUp(payload).catch(() => {});
+  } else {
+    await interaction.reply(payload).catch(() => {});
+  }
+}
 
-  await message.reply({
-    embeds: [embed],
-    allowedMentions: {
-      repliedUser: false,
-      parse: [],
-      users: target ? [message.author.id, target.id] : [message.author.id],
-    },
-  });
+function isReplyContextValid(interaction, record) {
+  return Boolean(
+    interaction.inGuild?.() &&
+      interaction.guildId === record.guildId &&
+      interaction.channelId === record.channelId &&
+      (!record.messageId || interaction.message?.id === record.messageId),
+  );
+}
+
+export async function handleAnimeReplyButton(
+  interaction,
+  store,
+  client,
+  gifFetcher = fetchAnimeGif,
+) {
+  const prefix = "sukuna:anime-reply:";
+  if (!interaction.customId?.startsWith(prefix)) return false;
+
+  const id = interaction.customId.slice(prefix.length);
+  const record = store.getAnimeReply(id);
+  if (!record) {
+    await privateReply(interaction, "This reply button has expired or is no longer available.");
+    return true;
+  }
+  if (interaction.user.id !== record.targetId) {
+    await privateReply(interaction, "Only the person who received the interaction can reply.");
+    return true;
+  }
+  if (!isReplyContextValid(interaction, record)) {
+    await privateReply(interaction, "This reply button no longer matches its original message.");
+    return true;
+  }
+  if (record.status !== "pending") {
+    await privateReply(interaction, "This reply button has already been used or expired.");
+    return true;
+  }
+  if (Date.parse(record.expiresAt) <= Date.now()) {
+    await store.consumeAnimeReply(
+      id,
+      interaction.user.id,
+      interaction.guildId,
+      interaction.channelId,
+      interaction.message?.id,
+    );
+    await privateReply(interaction, "This reply button has expired.");
+    return true;
+  }
+
+  await interaction.deferUpdate();
+  const result = await store.consumeAnimeReply(
+    id,
+    interaction.user.id,
+    interaction.guildId,
+    interaction.channelId,
+    interaction.message?.id,
+  );
+  if (!result.ok) {
+    const messages = {
+      unauthorized: "Only the person who received the interaction can reply.",
+      expired: "This reply button has expired.",
+      resolved: "This reply button has already been used.",
+      "wrong-message": "This reply button no longer matches its original message.",
+      "not-found": "This reply button is no longer available.",
+    };
+    await privateReply(interaction, messages[result.reason] ?? "This reply could not be processed.");
+    return true;
+  }
+
+  try {
+    await interaction.editReply({ components: [] });
+  } catch (error) {
+    logError(error, "Could not disable a used anime reply button");
+  }
+
+  try {
+    await sendAnimeInteractionMessage({
+      guild: interaction.guild,
+      channel: interaction.channel,
+      command: result.reply.action,
+      actorId: interaction.user.id,
+      targetId: result.reply.actorId,
+      store,
+      gifFetcher,
+      send: (payload) => interaction.channel.send(payload),
+    });
+    await privateReply(interaction, "Your anime interaction was sent.");
+  } catch (error) {
+    await sendBotErrorLog(
+      interaction.guild,
+      store,
+      `Anime reply interaction: ${result.reply.action}`,
+      error,
+    );
+    await privateReply(
+      interaction,
+      error instanceof UserFacingError
+        ? error.message
+        : "I couldn't send that anime reply right now. The button can't be reused, but you can start a new interaction.",
+    );
+  }
 
   return true;
 }

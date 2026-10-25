@@ -53,6 +53,18 @@ const HELP_GROUPS = [
       "`s wave @user` · `s highfive @user` · `s dance`",
     ],
   },
+  {
+    name: "Relationships",
+    commands: [
+      "`s marry @user` — propose with Accept and Decline buttons",
+      "`s married` — show your spouse",
+      "`s divorce` — request confirmation before ending a marriage",
+      "`s couple @user` — check your relationship",
+      "`s ship @user` — show a playful compatibility score",
+      "`s proposals` — list your pending proposals",
+      "`s marriage` — show marriage commands and your status",
+    ],
+  },
 ];
 
 async function reply(message, content) {

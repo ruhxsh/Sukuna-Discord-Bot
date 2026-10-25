@@ -2,8 +2,24 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 
-const DATA_VERSION = 1;
+const DATA_VERSION = 2;
 const SNOWFLAKE_PATTERN = /^\d{17,20}$/;
+const MARRIAGE_PROPOSAL_STATUSES = new Set([
+  "pending",
+  "accepted",
+  "declined",
+  "expired",
+  "cancelled",
+]);
+const ANIME_REPLY_STATUSES = new Set(["pending", "used", "expired", "cancelled"]);
+const DIVORCE_CONFIRMATION_STATUSES = new Set([
+  "pending",
+  "confirmed",
+  "cancelled",
+  "expired",
+  "superseded",
+  "stale",
+]);
 
 function isRecord(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -63,8 +79,198 @@ function normalizeWarnings(raw) {
   return warnings;
 }
 
+function isValidTimestamp(value) {
+  return typeof value === "string" && Number.isFinite(Date.parse(value));
+}
+
+function normalizeMarriages(raw) {
+  if (!Array.isArray(raw)) return [];
+
+  const marriages = [];
+  const partneredMembers = new Set();
+  for (const entry of raw) {
+    if (
+      !isRecord(entry) ||
+      !isSnowflake(entry.guildId) ||
+      !isSnowflake(entry.memberA) ||
+      !isSnowflake(entry.memberB) ||
+      entry.memberA === entry.memberB ||
+      !isValidTimestamp(entry.marriedAt)
+    ) {
+      continue;
+    }
+
+    const [memberA, memberB] = [entry.memberA, entry.memberB].sort();
+    const memberAKey = `${entry.guildId}:${memberA}`;
+    const memberBKey = `${entry.guildId}:${memberB}`;
+    if (partneredMembers.has(memberAKey) || partneredMembers.has(memberBKey)) {
+      continue;
+    }
+
+    partneredMembers.add(memberAKey);
+    partneredMembers.add(memberBKey);
+    marriages.push({ guildId: entry.guildId, memberA, memberB, marriedAt: entry.marriedAt });
+  }
+
+  return marriages;
+}
+
+function normalizeMarriageProposals(raw) {
+  if (!Array.isArray(raw)) return [];
+
+  const proposals = [];
+  const ids = new Set();
+  const pendingMembers = new Set();
+  const now = Date.now();
+  for (const entry of raw) {
+    if (
+      !isRecord(entry) ||
+      typeof entry.id !== "string" ||
+      entry.id.length > 100 ||
+      ids.has(entry.id) ||
+      !isSnowflake(entry.guildId) ||
+      !isSnowflake(entry.proposerId) ||
+      !isSnowflake(entry.recipientId) ||
+      entry.proposerId === entry.recipientId ||
+      !isValidTimestamp(entry.createdAt) ||
+      !isValidTimestamp(entry.expiresAt) ||
+      !MARRIAGE_PROPOSAL_STATUSES.has(entry.status)
+    ) {
+      continue;
+    }
+
+    let status = entry.status;
+    if (status === "pending" && Date.parse(entry.expiresAt) <= now) {
+      status = "expired";
+    }
+
+    const proposerKey = `${entry.guildId}:${entry.proposerId}`;
+    const recipientKey = `${entry.guildId}:${entry.recipientId}`;
+    if (
+      status === "pending" &&
+      (pendingMembers.has(proposerKey) || pendingMembers.has(recipientKey))
+    ) {
+      status = "cancelled";
+    }
+    if (status === "pending") {
+      pendingMembers.add(proposerKey);
+      pendingMembers.add(recipientKey);
+    }
+
+    ids.add(entry.id);
+    proposals.push({
+      id: entry.id,
+      guildId: entry.guildId,
+      proposerId: entry.proposerId,
+      recipientId: entry.recipientId,
+      channelId: isSnowflake(entry.channelId) ? entry.channelId : null,
+      messageId: isSnowflake(entry.messageId) ? entry.messageId : null,
+      createdAt: entry.createdAt,
+      expiresAt: entry.expiresAt,
+      status,
+    });
+  }
+
+  return proposals;
+}
+
+function normalizeAnimeReplies(raw) {
+  if (!Array.isArray(raw)) return [];
+
+  const replies = [];
+  const ids = new Set();
+  const now = Date.now();
+  for (const entry of raw) {
+    if (
+      !isRecord(entry) ||
+      typeof entry.id !== "string" ||
+      entry.id.length > 100 ||
+      ids.has(entry.id) ||
+      !isSnowflake(entry.guildId) ||
+      !isSnowflake(entry.channelId) ||
+      !isSnowflake(entry.actorId) ||
+      !isSnowflake(entry.targetId) ||
+      entry.actorId === entry.targetId ||
+      typeof entry.action !== "string" ||
+      !/^[a-z]{2,20}$/.test(entry.action) ||
+      !isValidTimestamp(entry.expiresAt) ||
+      !ANIME_REPLY_STATUSES.has(entry.status)
+    ) {
+      continue;
+    }
+
+    let status = entry.status;
+    if (status === "pending" && Date.parse(entry.expiresAt) <= now) {
+      status = "expired";
+    }
+    ids.add(entry.id);
+    replies.push({
+      id: entry.id,
+      guildId: entry.guildId,
+      channelId: entry.channelId,
+      messageId: isSnowflake(entry.messageId) ? entry.messageId : null,
+      action: entry.action,
+      actorId: entry.actorId,
+      targetId: entry.targetId,
+      createdAt: isValidTimestamp(entry.createdAt)
+        ? entry.createdAt
+        : new Date().toISOString(),
+      expiresAt: entry.expiresAt,
+      status,
+      usedAt: isValidTimestamp(entry.usedAt) ? entry.usedAt : null,
+    });
+  }
+
+  return replies;
+}
+
+function normalizeDivorceConfirmations(raw) {
+  if (!Array.isArray(raw)) return [];
+
+  const confirmations = [];
+  const ids = new Set();
+  const now = Date.now();
+  for (const entry of raw) {
+    if (
+      !isRecord(entry) ||
+      typeof entry.id !== "string" ||
+      entry.id.length > 100 ||
+      ids.has(entry.id) ||
+      !isSnowflake(entry.guildId) ||
+      !isSnowflake(entry.userId) ||
+      !isSnowflake(entry.spouseId) ||
+      entry.userId === entry.spouseId ||
+      !isSnowflake(entry.channelId) ||
+      !isValidTimestamp(entry.createdAt) ||
+      !isValidTimestamp(entry.expiresAt) ||
+      !DIVORCE_CONFIRMATION_STATUSES.has(entry.status)
+    ) {
+      continue;
+    }
+
+    let status = entry.status;
+    if (status === "pending" && Date.parse(entry.expiresAt) <= now) {
+      status = "expired";
+    }
+    ids.add(entry.id);
+    confirmations.push({
+      id: entry.id,
+      guildId: entry.guildId,
+      userId: entry.userId,
+      spouseId: entry.spouseId,
+      channelId: entry.channelId,
+      messageId: isSnowflake(entry.messageId) ? entry.messageId : null,
+      createdAt: entry.createdAt,
+      expiresAt: entry.expiresAt,
+      status,
+    });
+  }
+
+  return confirmations;
+}
+
 export function normalizeStoreData(raw) {
-  if (!isRecord(raw) || raw.version !== DATA_VERSION) {
+  if (!isRecord(raw) || ![1, DATA_VERSION].includes(raw.version)) {
     throw new Error("The Sukuna data file has an unsupported or invalid format.");
   }
 
@@ -79,7 +285,24 @@ export function normalizeStoreData(raw) {
     version: DATA_VERSION,
     guilds,
     warnings: normalizeWarnings(raw.warnings),
+    marriages: normalizeMarriages(raw.marriages),
+    marriageProposals: normalizeMarriageProposals(raw.marriageProposals),
+    animeReplies: normalizeAnimeReplies(raw.animeReplies),
+    divorceConfirmations: normalizeDivorceConfirmations(raw.divorceConfirmations),
   };
+}
+
+function copyRecord(record) {
+  return record ? { ...record } : null;
+}
+
+function marriageKey(guildId, userId) {
+  return `${guildId}:${userId}`;
+}
+
+function makeMarriage(guildId, firstId, secondId, marriedAt) {
+  const [memberA, memberB] = [firstId, secondId].sort();
+  return { guildId, memberA, memberB, marriedAt };
 }
 
 export function warningKey(guildId, userId) {
@@ -89,7 +312,15 @@ export function warningKey(guildId, userId) {
 export class JsonStore {
   constructor(filePath) {
     this.filePath = resolve(filePath);
-    this.data = { version: DATA_VERSION, guilds: {}, warnings: {} };
+    this.data = {
+      version: DATA_VERSION,
+      guilds: {},
+      warnings: {},
+      marriages: [],
+      marriageProposals: [],
+      animeReplies: [],
+      divorceConfirmations: [],
+    };
     this.saveQueue = Promise.resolve();
   }
 
@@ -106,7 +337,15 @@ export class JsonStore {
       this.data = normalizeStoreData(JSON.parse(text));
     } catch (error) {
       if (error?.code === "ENOENT") {
-        this.data = { version: DATA_VERSION, guilds: {}, warnings: {} };
+        this.data = {
+          version: DATA_VERSION,
+          guilds: {},
+          warnings: {},
+          marriages: [],
+          marriageProposals: [],
+          animeReplies: [],
+          divorceConfirmations: [],
+        };
         return this;
       }
 
@@ -188,6 +427,411 @@ export class JsonStore {
     delete this.data.warnings[key];
     await this.save();
     return previousCount;
+  }
+
+  getMarriage(guildId, userId) {
+    const marriage = this.data.marriages.find(
+      (entry) =>
+        entry.guildId === guildId &&
+        (entry.memberA === userId || entry.memberB === userId),
+    );
+    if (!marriage) return null;
+    return {
+      ...marriage,
+      spouseId: marriage.memberA === userId ? marriage.memberB : marriage.memberA,
+    };
+  }
+
+  getMarriageBetween(guildId, firstId, secondId) {
+    return (
+      this.data.marriages.find(
+        (entry) =>
+          entry.guildId === guildId &&
+          ((entry.memberA === firstId && entry.memberB === secondId) ||
+            (entry.memberA === secondId && entry.memberB === firstId)),
+      ) ?? null
+    );
+  }
+
+  getMarriageProposal(id) {
+    return copyRecord(this.data.marriageProposals.find((entry) => entry.id === id));
+  }
+
+  async expireMarriageProposals(guildId = null, now = Date.now()) {
+    let changed = false;
+    for (const proposal of this.data.marriageProposals) {
+      if (
+        proposal.status === "pending" &&
+        (!guildId || proposal.guildId === guildId) &&
+        Date.parse(proposal.expiresAt) <= now
+      ) {
+        proposal.status = "expired";
+        changed = true;
+      }
+    }
+
+    if (changed) await this.save();
+    return changed;
+  }
+
+  async getPendingMarriageProposals(guildId, userId, now = Date.now()) {
+    await this.expireMarriageProposals(guildId, now);
+    return this.data.marriageProposals
+      .filter(
+        (entry) =>
+          entry.guildId === guildId &&
+          entry.status === "pending" &&
+          Date.parse(entry.expiresAt) > now &&
+          (entry.proposerId === userId || entry.recipientId === userId),
+      )
+      .map(copyRecord);
+  }
+
+  async createMarriageProposal({
+    guildId,
+    proposerId,
+    recipientId,
+    channelId,
+    expiresAt,
+    now = Date.now(),
+  }) {
+    if (
+      ![guildId, proposerId, recipientId, channelId].every(isSnowflake) ||
+      proposerId === recipientId ||
+      !isValidTimestamp(expiresAt) ||
+      Date.parse(expiresAt) <= now
+    ) {
+      return { ok: false, reason: "invalid" };
+    }
+
+    await this.expireMarriageProposals(guildId, now);
+    if (this.getMarriage(guildId, proposerId) || this.getMarriage(guildId, recipientId)) {
+      return { ok: false, reason: "already-married" };
+    }
+
+    const conflict = this.data.marriageProposals.some(
+      (entry) =>
+        entry.guildId === guildId &&
+        entry.status === "pending" &&
+        Date.parse(entry.expiresAt) > now &&
+        [entry.proposerId, entry.recipientId].some((id) =>
+          [proposerId, recipientId].includes(id),
+        ),
+    );
+    if (conflict) return { ok: false, reason: "pending-conflict" };
+
+    const proposal = {
+      id: randomUUID(),
+      guildId,
+      proposerId,
+      recipientId,
+      channelId,
+      messageId: null,
+      createdAt: new Date(now).toISOString(),
+      expiresAt,
+      status: "pending",
+    };
+    this.data.marriageProposals.push(proposal);
+    await this.save();
+    return { ok: true, proposal: copyRecord(proposal) };
+  }
+
+  async setMarriageProposalMessage(id, channelId, messageId) {
+    const proposal = this.data.marriageProposals.find((entry) => entry.id === id);
+    if (!proposal || !isSnowflake(channelId) || !isSnowflake(messageId)) return false;
+    proposal.channelId = channelId;
+    proposal.messageId = messageId;
+    await this.save();
+    return true;
+  }
+
+  async cancelMarriageProposal(id) {
+    const proposal = this.data.marriageProposals.find((entry) => entry.id === id);
+    if (!proposal || proposal.status !== "pending") return false;
+    proposal.status = "cancelled";
+    await this.save();
+    return true;
+  }
+
+  async respondToMarriageProposal(id, userId, decision, now = Date.now()) {
+    const proposal = this.data.marriageProposals.find((entry) => entry.id === id);
+    if (!proposal) return { ok: false, reason: "not-found" };
+    if (proposal.recipientId !== userId) return { ok: false, reason: "unauthorized" };
+    if (proposal.status !== "pending") return { ok: false, reason: "resolved" };
+    if (!["accept", "decline"].includes(decision)) {
+      return { ok: false, reason: "invalid" };
+    }
+    if (Date.parse(proposal.expiresAt) <= now) {
+      proposal.status = "expired";
+      await this.save();
+      return { ok: false, reason: "expired" };
+    }
+
+    if (decision === "decline") {
+      proposal.status = "declined";
+      await this.save();
+      return { ok: true, decision };
+    }
+
+    if (
+      this.getMarriage(proposal.guildId, proposal.proposerId) ||
+      this.getMarriage(proposal.guildId, proposal.recipientId)
+    ) {
+      proposal.status = "cancelled";
+      await this.save();
+      return { ok: false, reason: "already-married" };
+    }
+
+    const marriage = makeMarriage(
+      proposal.guildId,
+      proposal.proposerId,
+      proposal.recipientId,
+      new Date(now).toISOString(),
+    );
+    this.data.marriages.push(marriage);
+    proposal.status = "accepted";
+    for (const other of this.data.marriageProposals) {
+      if (
+        other.id !== proposal.id &&
+        other.guildId === proposal.guildId &&
+        other.status === "pending" &&
+        [other.proposerId, other.recipientId].some((id) =>
+          [proposal.proposerId, proposal.recipientId].includes(id),
+        )
+      ) {
+        other.status = "cancelled";
+      }
+    }
+    await this.save();
+    return { ok: true, decision, marriage: copyRecord(marriage) };
+  }
+
+  async createAnimeReply({
+    guildId,
+    channelId,
+    action,
+    actorId,
+    targetId,
+    expiresAt,
+    now = Date.now(),
+  }) {
+    if (
+      ![guildId, channelId, actorId, targetId].every(isSnowflake) ||
+      actorId === targetId ||
+      typeof action !== "string" ||
+      !/^[a-z]{2,20}$/.test(action) ||
+      !isValidTimestamp(expiresAt) ||
+      Date.parse(expiresAt) <= now
+    ) {
+      throw new Error("Invalid anime reply record.");
+    }
+
+    const reply = {
+      id: randomUUID(),
+      guildId,
+      channelId,
+      messageId: null,
+      action,
+      actorId,
+      targetId,
+      createdAt: new Date(now).toISOString(),
+      expiresAt,
+      status: "pending",
+      usedAt: null,
+    };
+    this.data.animeReplies.push(reply);
+    await this.save();
+    return copyRecord(reply);
+  }
+
+  getAnimeReply(id) {
+    return copyRecord(this.data.animeReplies.find((entry) => entry.id === id));
+  }
+
+  async setAnimeReplyMessage(id, channelId, messageId) {
+    const reply = this.data.animeReplies.find((entry) => entry.id === id);
+    if (!reply || !isSnowflake(channelId) || !isSnowflake(messageId)) return false;
+    reply.channelId = channelId;
+    reply.messageId = messageId;
+    await this.save();
+    return true;
+  }
+
+  async removeAnimeReply(id) {
+    const index = this.data.animeReplies.findIndex((entry) => entry.id === id);
+    if (index === -1) return false;
+    this.data.animeReplies.splice(index, 1);
+    await this.save();
+    return true;
+  }
+
+  async cancelInteractionsForMessage(channelId, messageId) {
+    if (!isSnowflake(channelId) || !isSnowflake(messageId)) return 0;
+    let changed = 0;
+    for (const proposal of this.data.marriageProposals) {
+      if (
+        proposal.status === "pending" &&
+        proposal.channelId === channelId &&
+        proposal.messageId === messageId
+      ) {
+        proposal.status = "cancelled";
+        changed += 1;
+      }
+    }
+    for (const reply of this.data.animeReplies) {
+      if (
+        reply.status === "pending" &&
+        reply.channelId === channelId &&
+        reply.messageId === messageId
+      ) {
+        reply.status = "cancelled";
+        changed += 1;
+      }
+    }
+    for (const confirmation of this.data.divorceConfirmations) {
+      if (
+        confirmation.status === "pending" &&
+        confirmation.channelId === channelId &&
+        confirmation.messageId === messageId
+      ) {
+        confirmation.status = "cancelled";
+        changed += 1;
+      }
+    }
+
+    if (changed > 0) await this.save();
+    return changed;
+  }
+
+  async consumeAnimeReply(
+    id,
+    userId,
+    guildId,
+    channelId,
+    messageId,
+    now = Date.now(),
+  ) {
+    const reply = this.data.animeReplies.find((entry) => entry.id === id);
+    if (!reply) return { ok: false, reason: "not-found" };
+    if (
+      reply.guildId !== guildId ||
+      reply.channelId !== channelId ||
+      (reply.messageId && reply.messageId !== messageId)
+    ) {
+      return { ok: false, reason: "wrong-message" };
+    }
+    if (reply.targetId !== userId) return { ok: false, reason: "unauthorized" };
+    if (reply.status !== "pending") return { ok: false, reason: "resolved" };
+    if (Date.parse(reply.expiresAt) <= now) {
+      reply.status = "expired";
+      await this.save();
+      return { ok: false, reason: "expired" };
+    }
+
+    reply.messageId ??= messageId;
+    reply.status = "used";
+    reply.usedAt = new Date(now).toISOString();
+    await this.save();
+    return { ok: true, reply: copyRecord(reply) };
+  }
+
+  async createDivorceConfirmation({
+    guildId,
+    userId,
+    spouseId,
+    channelId,
+    expiresAt,
+    now = Date.now(),
+  }) {
+    if (
+      ![guildId, userId, spouseId, channelId].every(isSnowflake) ||
+      userId === spouseId ||
+      !isValidTimestamp(expiresAt) ||
+      Date.parse(expiresAt) <= now
+    ) {
+      return { ok: false, reason: "invalid" };
+    }
+
+    const marriage = this.getMarriage(guildId, userId);
+    if (!marriage || marriage.spouseId !== spouseId) {
+      return { ok: false, reason: "not-married" };
+    }
+
+    for (const confirmation of this.data.divorceConfirmations) {
+      if (
+        confirmation.guildId === guildId &&
+        confirmation.userId === userId &&
+        confirmation.status === "pending"
+      ) {
+        confirmation.status = "superseded";
+      }
+    }
+
+    const confirmation = {
+      id: randomUUID(),
+      guildId,
+      userId,
+      spouseId,
+      channelId,
+      messageId: null,
+      createdAt: new Date(now).toISOString(),
+      expiresAt,
+      status: "pending",
+    };
+    this.data.divorceConfirmations.push(confirmation);
+    await this.save();
+    return { ok: true, confirmation: copyRecord(confirmation) };
+  }
+
+  getDivorceConfirmation(id) {
+    return copyRecord(this.data.divorceConfirmations.find((entry) => entry.id === id));
+  }
+
+  async setDivorceConfirmationMessage(id, channelId, messageId) {
+    const confirmation = this.data.divorceConfirmations.find((entry) => entry.id === id);
+    if (!confirmation || !isSnowflake(channelId) || !isSnowflake(messageId)) return false;
+    confirmation.channelId = channelId;
+    confirmation.messageId = messageId;
+    await this.save();
+    return true;
+  }
+
+  async resolveDivorceConfirmation(id, userId, decision, now = Date.now()) {
+    const confirmation = this.data.divorceConfirmations.find((entry) => entry.id === id);
+    if (!confirmation) return { ok: false, reason: "not-found" };
+    if (confirmation.userId !== userId) return { ok: false, reason: "unauthorized" };
+    if (confirmation.status !== "pending") return { ok: false, reason: "resolved" };
+    if (!["confirm", "cancel"].includes(decision)) {
+      return { ok: false, reason: "invalid" };
+    }
+    if (Date.parse(confirmation.expiresAt) <= now) {
+      confirmation.status = "expired";
+      await this.save();
+      return { ok: false, reason: "expired" };
+    }
+
+    if (decision === "cancel") {
+      confirmation.status = "cancelled";
+      await this.save();
+      return { ok: true, decision };
+    }
+
+    const marriageIndex = this.data.marriages.findIndex(
+      (entry) =>
+        entry.guildId === confirmation.guildId &&
+        ((entry.memberA === confirmation.userId && entry.memberB === confirmation.spouseId) ||
+          (entry.memberB === confirmation.userId && entry.memberA === confirmation.spouseId)),
+    );
+    if (marriageIndex === -1) {
+      confirmation.status = "stale";
+      await this.save();
+      return { ok: false, reason: "stale" };
+    }
+
+    this.data.marriages.splice(marriageIndex, 1);
+    confirmation.status = "confirmed";
+    await this.save();
+    return { ok: true, decision };
   }
 
   async save() {
