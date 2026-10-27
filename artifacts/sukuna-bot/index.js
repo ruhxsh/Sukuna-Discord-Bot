@@ -1,3 +1,4 @@
+
 import {
   Client,
   Events,
@@ -10,6 +11,7 @@ import {
   sendWelcomeMessage,
 } from "./src/logging.js";
 import { JsonStore } from "./src/store.js";
+import { startChatReviver } from "./src/chat-reviver.js";
 
 const requiredIntents = [
   GatewayIntentBits.Guilds,
@@ -31,6 +33,8 @@ async function start() {
     console.info(
       `[Sukuna] Logged in as ${readyClient.user.tag}; connected to ${readyClient.guilds.cache.size} server(s).`,
     );
+
+    startChatReviver(client);
   });
 
   client.on(Events.MessageCreate, (message) => {
