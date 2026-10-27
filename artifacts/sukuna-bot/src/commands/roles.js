@@ -6,6 +6,7 @@ import {
   PermissionFlagsBits,
 } from "discord.js";
 import { sendBotErrorLog, sendModerationLog } from "../logging.js";
+import { handleCountingSetup } from "./counting.js";
 import {
   mentionedMember,
   mentionedRole,
@@ -244,6 +245,7 @@ async function handleConfig(message, store) {
     `Welcome channel: ${config.welcomeChannelId ? `<#${config.welcomeChannelId}>` : "off"}`,
     `Moderation log: ${config.modLogChannelId ? `<#${config.modLogChannelId}>` : "off"}`,
     `Autorole: ${config.autoRoleId ? `<@&${config.autoRoleId}>` : "off"}`,
+    `Counting game: ${config.countingChannelId ? `<#${config.countingChannelId}>` : "off"} (current ${config.currentCount}, highest ${config.highestCount})`,
     `Self-assignable roles: ${roleNames.length ? roleNames.join(", ") : "none"}`,
   ];
   await reply(message, lines.join("\n"));
@@ -275,6 +277,12 @@ export async function handleRoleManagement(message, command, store) {
       return true;
     case "disableautorole":
       await handleAutorole(message, store, true);
+      return true;
+    case "setcounting":
+      await handleCountingSetup(message, store);
+      return true;
+    case "disablecounting":
+      await handleCountingSetup(message, store, true);
       return true;
     case "addselfrole":
     case "removeselfrole":

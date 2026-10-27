@@ -20,6 +20,7 @@ import {
   handleMessage,
   parseCommand,
 } from "../src/command-handler.js";
+import { handleCountingMessage, handleCountingSetup } from "../src/commands/counting.js";
 import { handleMarriageCommand } from "../src/commands/marriage.js";
 import { safeErrorMessage } from "../src/logging.js";
 import { selfAssignableRoleProblem } from "../src/permissions.js";
@@ -35,15 +36,19 @@ const userId = "20000000000000002";
 const moderatorId = "30000000000000003";
 const channelId = "40000000000000004";
 
-test("prefix parser accepts lowercase s and ignores ordinary messages", () => {
+test("prefix parser accepts lowercase and uppercase s and ignores ordinary messages", () => {
   assert.deepEqual(parseCommand("s ping"), { command: "ping", args: [] });
+  assert.deepEqual(parseCommand("S ping"), { command: "ping", args: [] });
   assert.deepEqual(parseCommand("s timeout @member 20m reason words"), {
+    command: "timeout",
+    args: ["@member", "20m", "reason", "words"],
+  });
+  assert.deepEqual(parseCommand("S timeout @member 20m reason words"), {
     command: "timeout",
     args: ["@member", "20m", "reason", "words"],
   });
   assert.deepEqual(parseCommand("s"), { command: "", args: [] });
   assert.equal(parseCommand("someone said hi"), null);
-  assert.equal(parseCommand("S ping"), null);
 });
 
 test("s avatar is not accepted as an alias for s av", async () => {
@@ -456,7 +461,10 @@ test("settings and warnings survive a store reload", async () => {
     await firstRun.setGuildConfig(guildId, {
       welcomeChannelId: channelId,
       selfAssignableRoleIds: ["50000000000000005"],
+      countingChannelId: channelId,
     });
+    assert.equal(await firstRun.tryIncrementCounting(guildId, 1, userId), true);
+    assert.equal(await firstRun.tryIncrementCounting(guildId, 2, moderatorId), true);
     const warning = await firstRun.addWarning(
       guildId,
       userId,
@@ -469,6 +477,10 @@ test("settings and warnings survive a store reload", async () => {
     assert.deepEqual(afterRestart.getGuildConfig(guildId).selfAssignableRoleIds, [
       "50000000000000005",
     ]);
+    assert.equal(afterRestart.getGuildConfig(guildId).countingChannelId, channelId);
+    assert.equal(afterRestart.getGuildConfig(guildId).currentCount, 2);
+    assert.equal(afterRestart.getGuildConfig(guildId).highestCount, 2);
+    assert.equal(afterRestart.getGuildConfig(guildId).lastCounterId, moderatorId);
     assert.deepEqual(afterRestart.getWarnings(guildId, userId), [warning]);
     assert.equal(await afterRestart.clearWarnings(guildId, userId), 1);
     assert.deepEqual(
@@ -502,10 +514,188 @@ test("store normalization drops invalid IDs and defaults bad settings safely", (
     modLogChannelId: channelId,
     autoRoleId: null,
     selfAssignableRoleIds: ["50000000000000005"],
+    countingChannelId: null,
+    currentCount: 0,
+    highestCount: 0,
+    lastCounterId: null,
   });
   assert.equal(data.guilds.invalid, undefined);
   assert.deepEqual(data.warnings, {});
   assert.throws(() => normalizeStoreData({ version: 99 }), /unsupported or invalid/);
+});
+
+function makeCountingMessage({
+  content,
+  guildId: messageGuildId = guildId,
+  channelId: messageChannelId = channelId,
+  authorId = userId,
+  permissions = new PermissionsBitField(PermissionFlagsBits.AddReactions),
+}) {
+  const reactions = [];
+  return {
+    author: { id: authorId, bot: false },
+    content,
+    guild: {
+      id: messageGuildId,
+      members: { me: { id: "60000000000000006" } },
+    },
+    channel: {
+      id: messageChannelId,
+      permissionsFor: () => permissions,
+    },
+    react: async (emoji) => reactions.push(emoji),
+    reactions,
+  };
+}
+
+test("counting rejects incorrect and consecutive-member numbers without changing state", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "sukuna-counting-test-"));
+  try {
+    const store = await new JsonStore(join(directory, "sukuna-data.json")).load();
+    await store.setGuildConfig(guildId, { countingChannelId: channelId });
+
+    const first = makeCountingMessage({ content: "1", authorId: userId });
+    const repeated = makeCountingMessage({ content: "2", authorId: userId });
+    const skipped = makeCountingMessage({ content: "3", authorId: moderatorId });
+    const second = makeCountingMessage({ content: "2", authorId: moderatorId });
+    const repeatedAgain = makeCountingMessage({ content: "3", authorId: moderatorId });
+    const third = makeCountingMessage({ content: "3", authorId: userId });
+
+    for (const message of [first, repeated, skipped, second, repeatedAgain, third]) {
+      await handleCountingMessage(message, store);
+    }
+
+    assert.deepEqual(
+      [first, repeated, skipped, second, repeatedAgain, third].map((message) => message.reactions[0]),
+      ["✅", "❌", "❌", "✅", "❌", "✅"],
+    );
+    assert.equal(store.getGuildConfig(guildId).currentCount, 3);
+    assert.equal(store.getGuildConfig(guildId).highestCount, 3);
+    assert.equal(store.getGuildConfig(guildId).lastCounterId, userId);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("simultaneous counting messages accept only one count and servers stay independent", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "sukuna-counting-race-test-"));
+  const otherGuildId = "10000000000000003";
+  try {
+    const store = await new JsonStore(join(directory, "sukuna-data.json")).load();
+    await store.setGuildConfig(guildId, { countingChannelId: channelId });
+    await store.setGuildConfig(otherGuildId, { countingChannelId: "40000000000000005" });
+
+    const messages = [
+      makeCountingMessage({ content: "1", authorId: userId }),
+      makeCountingMessage({ content: "1", authorId: moderatorId }),
+      makeCountingMessage({
+        content: "1",
+        guildId: otherGuildId,
+        channelId: "40000000000000005",
+        authorId: userId,
+      }),
+    ];
+    await Promise.all(messages.map((message) => handleCountingMessage(message, store)));
+
+    assert.deepEqual(
+      messages.slice(0, 2).flatMap((message) => message.reactions).sort(),
+      ["✅", "❌"],
+    );
+    assert.deepEqual(messages[2].reactions, ["✅"]);
+    assert.equal(store.getGuildConfig(guildId).currentCount, 1);
+    assert.equal(store.getGuildConfig(otherGuildId).currentCount, 1);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("counting ignores non-number messages and does not advance without Add Reactions", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "sukuna-counting-permissions-test-"));
+  const originalConsoleError = console.error;
+  try {
+    const store = await new JsonStore(join(directory, "sukuna-data.json")).load();
+    await store.setGuildConfig(guildId, { countingChannelId: channelId });
+
+    const ordinaryMessage = makeCountingMessage({ content: "hello" });
+    await handleCountingMessage(ordinaryMessage, store);
+    assert.deepEqual(ordinaryMessage.reactions, []);
+
+    const blockedMessage = makeCountingMessage({
+      content: "1",
+      permissions: new PermissionsBitField(),
+    });
+    console.error = () => {};
+    await handleCountingMessage(blockedMessage, store);
+    assert.deepEqual(blockedMessage.reactions, []);
+    assert.equal(store.getGuildConfig(guildId).currentCount, 0);
+  } finally {
+    console.error = originalConsoleError;
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("counting keeps a saved accepted count when Discord reaction delivery fails", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "sukuna-counting-reaction-test-"));
+  const originalConsoleError = console.error;
+  try {
+    const store = await new JsonStore(join(directory, "sukuna-data.json")).load();
+    await store.setGuildConfig(guildId, { countingChannelId: channelId });
+    const message = makeCountingMessage({ content: "1" });
+    message.react = async () => {
+      throw new Error("Reaction request failed");
+    };
+    console.error = () => {};
+
+    await assert.doesNotReject(handleCountingMessage(message, store));
+    assert.equal(store.getGuildConfig(guildId).currentCount, 1);
+    assert.equal(store.getGuildConfig(guildId).lastCounterId, userId);
+  } finally {
+    console.error = originalConsoleError;
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("counting setup requires ManageGuild and preserves progress when disabled", async () => {
+  const replies = [];
+  const configs = [];
+  const guild = {
+    id: guildId,
+    ownerId: "90000000000000009",
+    members: {
+      me: { permissions: new PermissionsBitField(PermissionFlagsBits.AddReactions) },
+    },
+  };
+  const channel = {
+    id: channelId,
+    guild,
+    send: () => {},
+    isTextBased: () => true,
+    permissionsFor: () => new PermissionsBitField(PermissionFlagsBits.AddReactions),
+  };
+  const message = {
+    author: { id: userId },
+    guild,
+    member: { permissions: new PermissionsBitField(PermissionFlagsBits.ManageGuild) },
+    mentions: { channels: { first: () => channel } },
+    reply: async (payload) => replies.push(payload),
+  };
+  const store = {
+    getGuildConfig: () => ({ currentCount: 7 }),
+    setGuildConfig: async (id, patch) => configs.push({ id, patch }),
+  };
+
+  await handleCountingSetup(message, store);
+  await handleCountingSetup(message, store, true);
+  assert.deepEqual(configs, [
+    { id: guildId, patch: { countingChannelId: channelId } },
+    { id: guildId, patch: { countingChannelId: null } },
+  ]);
+  assert.match(replies[0].content, /current count is 7/);
+  assert.match(replies[1].content, /current and highest counts are saved/);
+
+  message.member.permissions = new PermissionsBitField();
+  await assert.rejects(handleCountingSetup(message, store), /Manage Server/);
+  assert.equal(configs.length, 2);
 });
 
 test("invalid JSON is reported without overwriting the user's data file", async () => {

@@ -1,6 +1,6 @@
 # Sukuna Discord Bot
 
-Sukuna is a JavaScript bot for server moderation, safe role self-assignment, welcome messages, and basic server utilities. It uses a lowercase `s` prefix and discord.js v14.
+Sukuna is a JavaScript bot for server moderation, safe role self-assignment, welcome messages, a server counting game, and basic server utilities. It uses the `s` or `S` prefix and discord.js v14.
 
 ## Run the bot
 
@@ -34,9 +34,10 @@ Members need the matching Discord permission. The bot checks its own permission 
 - `s setwelcome #channel` / `s disablewelcome`
 - `s setmodlog #channel` / `s disablemodlog`
 - `s setautorole @role` / `s disableautorole`
+- `s setcounting #channel` / `s disablecounting` — configure or disable the counting game without resetting its saved count
 - `s config` — show the current settings
 
-Role assignment and self-role setup require Manage Roles. Channel settings require Manage Server. Roles with administrator or moderation powers, integration-managed roles, and `@everyone` cannot be self-assigned or used as the autorole.
+Role assignment and self-role setup require Manage Roles. Channel settings require Manage Server. The counting game accepts the next integer in its configured channel, requires a different member for each consecutive count, and reacts with ✅ or ❌. The bot needs Add Reactions permission in that channel. Disabling counting preserves the current count, highest count, and last successful counter. Roles with administrator or moderation powers, integration-managed roles, and `@everyone` cannot be self-assigned or used as the autorole.
 
 ### Utilities
 
@@ -62,7 +63,7 @@ The source can be changed with the non-secret `ANIME_GIF_API_BASE_URL` environme
 
 ## Saved data
 
-Sukuna writes server settings and warnings to `data/sukuna-data.json` in the project directory. Writes use a temporary file and rename so an interrupted write is less likely to damage saved data. The data file is excluded from Git. A malformed file is left untouched and reported instead of being silently replaced.
+Sukuna writes server settings, counting-game state, and warnings to `data/sukuna-data.json` in the project directory. Counting settings and progress are independent for each server. Writes use a temporary file and rename so an interrupted write is less likely to damage saved data. The data file is excluded from Git. A malformed file is left untouched and reported instead of being silently replaced.
 
 The Replit workspace file remains available after restarting the bot workflow. If you move the bot to a host with temporary storage, set the non-secret `BOT_DATA_DIR` environment variable to that host's persistent mounted directory. Do not run multiple Sukuna instances against the same JSON file; use a shared database if you need multiple instances.
 

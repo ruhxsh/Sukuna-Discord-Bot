@@ -11,11 +11,12 @@ import {
 } from "./commands/marriage.js";
 import { handleRoleButton, handleRoleManagement } from "./commands/roles.js";
 import { handleUtility } from "./commands/utility.js";
+import { handleCountingMessage } from "./commands/counting.js";
 
 const COMMAND_PREFIX = "s";
 
 export function parseCommand(content) {
-  const match = /^s(?:\s+([\s\S]*))?$/.exec(content ?? "");
+  const match = /^[sS](?:\s+([\s\S]*))?$/.exec(content ?? "");
   if (!match) return null;
 
   const words = (match[1] ?? "").trim().split(/\s+/).filter(Boolean);
@@ -40,7 +41,10 @@ export async function handleMessage(message, client, store) {
   if (message.author?.bot || !message.guild) return;
 
   const parsed = parseCommand(message.content);
-  if (!parsed) return;
+  if (!parsed) {
+    await handleCountingMessage(message, store);
+    return;
+  }
   if (!parsed.command) {
     await replySafely(message, "Use `s help` to see the available commands.");
     return;

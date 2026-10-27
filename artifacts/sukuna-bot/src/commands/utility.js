@@ -30,6 +30,7 @@ const HELP_GROUPS = [
       "`s setwelcome #channel` / `s disablewelcome` — set welcome messages",
       "`s setmodlog #channel` / `s disablemodlog` — set action/error logging",
       "`s setautorole @role` / `s disableautorole` — set new-member role",
+      "`s setcounting #channel` / `s disablecounting` — configure the counting game",
       "`s config` — view this server's bot settings",
     ],
   },
@@ -87,7 +88,7 @@ async function handleHelp(message) {
   const embed = new EmbedBuilder()
     .setColor(0x7c3aed)
     .setTitle("Sukuna commands")
-    .setDescription("Commands start with the lowercase prefix `s`.");
+    .setDescription("Commands start with `s` or `S`.");
 
   for (const group of HELP_GROUPS) {
     embed.addFields({ name: group.name, value: group.commands.join("\n") });

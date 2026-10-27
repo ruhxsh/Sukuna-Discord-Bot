@@ -35,6 +35,10 @@ function makeDefaultConfig() {
     modLogChannelId: null,
     autoRoleId: null,
     selfAssignableRoleIds: [],
+    countingChannelId: null,
+    currentCount: 0,
+    highestCount: 0,
+    lastCounterId: null,
   };
 }
 
@@ -51,6 +55,19 @@ function normalizeConfig(raw) {
       ...new Set(raw.selfAssignableRoleIds.filter(isSnowflake)),
     ];
   }
+
+  config.countingChannelId = isSnowflake(raw.countingChannelId)
+    ? raw.countingChannelId
+    : null;
+  config.currentCount =
+    Number.isSafeInteger(raw.currentCount) && raw.currentCount >= 0
+      ? raw.currentCount
+      : 0;
+  config.highestCount =
+    Number.isSafeInteger(raw.highestCount) && raw.highestCount >= 0
+      ? Math.max(raw.highestCount, config.currentCount)
+      : config.currentCount;
+  config.lastCounterId = isSnowflake(raw.lastCounterId) ? raw.lastCounterId : null;
 
   return config;
 }
@@ -417,6 +434,7 @@ export class JsonStore {
       "modLogChannelId",
       "autoRoleId",
       "selfAssignableRoleIds",
+      "countingChannelId",
     ]);
     const config = this.getGuildConfig(guildId);
 
@@ -437,6 +455,40 @@ export class JsonStore {
 
     await this.save();
     return config;
+  }
+
+  async tryIncrementCounting(guildId, count, userId) {
+    if (
+      !isSnowflake(guildId) ||
+      !Number.isSafeInteger(count) ||
+      count < 0 ||
+      !isSnowflake(userId)
+    ) {
+      throw new Error("Invalid counting game entry.");
+    }
+
+    const config = this.getGuildConfig(guildId);
+    if (count !== config.currentCount + 1 || userId === config.lastCounterId) {
+      return false;
+    }
+
+    const previousState = {
+      currentCount: config.currentCount,
+      highestCount: config.highestCount,
+      lastCounterId: config.lastCounterId,
+    };
+    config.currentCount = count;
+    config.highestCount = Math.max(config.highestCount, count);
+    config.lastCounterId = userId;
+
+    try {
+      await this.save();
+    } catch (error) {
+      Object.assign(config, previousState);
+      throw error;
+    }
+
+    return true;
   }
 
   getWarnings(guildId, userId) {
