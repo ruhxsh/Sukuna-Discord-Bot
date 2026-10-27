@@ -1,3 +1,4 @@
+
 import { EmbedBuilder, PermissionFlagsBits } from "discord.js";
 import {
   requireBotChannelPermission,
@@ -43,7 +44,7 @@ const HELP_GROUPS = [
       "`s av [@user]` — show an avatar (no mention shows your own)",
       "`s poll question` — create a yes/no reaction poll",
       "`s announce message` — post a staff-only announcement",
-      "`s say message` — send a staff-only message",
+      "`s say #channel message` — send a staff-only message to a specified channel",
     ],
   },
   {
@@ -77,10 +78,17 @@ async function reply(message, content) {
 
 function requireMessageContent(args, command) {
   const content = args.join(" ").trim();
-  if (!content) throw new UserFacingError(`Add some text: \`s ${command} your message\`.`);
+
+  if (!content) {
+    throw new UserFacingError(
+      `Add some text: \`s ${command} your message\`.`,
+    );
+  }
+
   if (content.length > 2_000) {
     throw new UserFacingError("Keep the message under 2,000 characters.");
   }
+
   return content;
 }
 
@@ -91,20 +99,31 @@ async function handleHelp(message) {
     .setDescription("Commands start with `s` or `S`.");
 
   for (const group of HELP_GROUPS) {
-    embed.addFields({ name: group.name, value: group.commands.join("\n") });
+    embed.addFields({
+      name: group.name,
+      value: group.commands.join("\n"),
+    });
   }
-  await message.reply({ embeds: [embed], allowedMentions: { parse: [] } });
+
+  await message.reply({
+    embeds: [embed],
+    allowedMentions: { parse: [] },
+  });
 }
 
 async function handleUserInfo(message) {
   const user = message.mentions.users.first() ?? message.author;
+
   const member =
     message.guild.members.cache.get(user.id) ??
     (await message.guild.members.fetch(user.id).catch(() => null));
+
   const joinedAt = member?.joinedTimestamp
     ? `<t:${Math.floor(member.joinedTimestamp / 1_000)}:F>`
     : "Not a current server member";
+
   const createdAt = `<t:${Math.floor(user.createdTimestamp / 1_000)}:F>`;
+
   const roles = member
     ? member.roles.cache
         .filter((role) => role.id !== message.guild.id)
@@ -124,11 +143,15 @@ async function handleUserInfo(message) {
       { name: "Roles", value: roles.slice(0, 1_024) },
     );
 
-  await message.reply({ embeds: [embed], allowedMentions: { parse: [] } });
+  await message.reply({
+    embeds: [embed],
+    allowedMentions: { parse: [] },
+  });
 }
 
 async function handleServerInfo(message) {
   const guild = message.guild;
+
   const embed = new EmbedBuilder()
     .setColor(0x7c3aed)
     .setTitle(guild.name)
@@ -146,43 +169,57 @@ async function handleServerInfo(message) {
       },
     );
 
-  await message.reply({ embeds: [embed], allowedMentions: { parse: [] } });
+  await message.reply({
+    embeds: [embed],
+    allowedMentions: { parse: [] },
+  });
 }
 
 async function handleAvatar(message) {
   const user = message.mentions.users.first() ?? message.author;
   const url = user.displayAvatarURL({ size: 1_024 });
+
   const embed = new EmbedBuilder()
     .setColor(0x7c3aed)
     .setTitle(`${user.tag}'s avatar`)
     .setImage(url);
-  await message.reply({ embeds: [embed], allowedMentions: { parse: [] } });
+
+  await message.reply({
+    embeds: [embed],
+    allowedMentions: { parse: [] },
+  });
 }
 
 async function handlePoll(message, args) {
   requireTextChannel(message.channel);
+
   requireBotChannelPermission(
     message.guild,
     message.channel,
     PermissionFlagsBits.SendMessages,
     "Send Messages",
   );
+
   requireBotChannelPermission(
     message.guild,
     message.channel,
     PermissionFlagsBits.EmbedLinks,
     "Embed Links",
   );
+
   requireBotChannelPermission(
     message.guild,
     message.channel,
     PermissionFlagsBits.AddReactions,
     "Add Reactions",
   );
+
   const question = args.join(" ").trim() || "Vote on the options below.";
+
   if (question.length > 2_000) {
     throw new UserFacingError("Keep the poll question under 2,000 characters.");
   }
+
   const poll = await message.channel.send({
     embeds: [
       new EmbedBuilder()
@@ -193,6 +230,7 @@ async function handlePoll(message, args) {
         .setTimestamp(),
     ],
   });
+
   await poll.react("👍");
   await poll.react("👎");
 }
@@ -200,13 +238,16 @@ async function handlePoll(message, args) {
 async function handleAnnounce(message, args) {
   requirePermission(message, PermissionFlagsBits.ManageGuild, "Manage Server");
   requireTextChannel(message.channel);
+
   requireBotChannelPermission(
     message.guild,
     message.channel,
     PermissionFlagsBits.SendMessages,
     "Send Messages",
   );
+
   const content = requireMessageContent(args, "announce");
+
   await message.channel.send({
     content,
     allowedMentions: { parse: [] },
@@ -215,15 +256,38 @@ async function handleAnnounce(message, args) {
 
 async function handleSay(message, args) {
   requirePermission(message, PermissionFlagsBits.ManageMessages, "Manage Messages");
-  requireTextChannel(message.channel);
+
+  if (!message.guild) {
+    throw new UserFacingError("This command can only be used in a server.");
+  }
+
+  const targetChannel = message.mentions.channels.find(
+    (channel) => channel.guildId === message.guild.id,
+  );
+
+  if (!targetChannel) {
+    throw new UserFacingError(
+      "Mention a destination channel. Example: `s say #general Hello everyone!`",
+    );
+  }
+
+  requireTextChannel(targetChannel);
+
   requireBotChannelPermission(
     message.guild,
-    message.channel,
+    targetChannel,
     PermissionFlagsBits.SendMessages,
     "Send Messages",
   );
-  const content = requireMessageContent(args, "say");
-  await message.channel.send({ content, allowedMentions: { parse: [] } });
+
+  const channelMention = `<#${targetChannel.id}>`;
+  const contentArgs = args.filter((arg) => arg !== channelMention);
+  const content = requireMessageContent(contentArgs, "say");
+
+  await targetChannel.send({
+    content,
+    allowedMentions: { parse: [] },
+  });
 }
 
 export async function handleUtility(message, command, args, client) {
@@ -231,27 +295,38 @@ export async function handleUtility(message, command, args, client) {
     case "help":
       await handleHelp(message);
       return true;
+
     case "ping":
-      await reply(message, `Pong! WebSocket latency: ${Math.round(client.ws.ping)} ms.`);
+      await reply(
+        message,
+        `Pong! WebSocket latency: ${Math.round(client.ws.ping)} ms.`,
+      );
       return true;
+
     case "userinfo":
       await handleUserInfo(message);
       return true;
+
     case "serverinfo":
       await handleServerInfo(message);
       return true;
+
     case "av":
       await handleAvatar(message);
       return true;
+
     case "poll":
       await handlePoll(message, args);
       return true;
+
     case "announce":
       await handleAnnounce(message, args);
       return true;
+
     case "say":
       await handleSay(message, args);
       return true;
+
     default:
       return false;
   }
