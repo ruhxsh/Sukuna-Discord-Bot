@@ -44,7 +44,8 @@ const HELP_GROUPS = [
       "`s av [@user]` — show an avatar (no mention shows your own)",
       "`s poll question` — create a yes/no reaction poll",
       "`s announce message` — post a staff-only announcement",
-      "`s say #channel message` — send a staff-only message to a specified channel",
+      "`s say message` — send a staff-only message in the current channel",
+      "`s say #channel message` — send a staff-only message to another channel",
     ],
   },
   {
@@ -261,33 +262,46 @@ async function handleSay(message, args) {
     throw new UserFacingError("This command can only be used in a server.");
   }
 
+  requireTextChannel(message.channel);
+
   const targetChannel = message.mentions.channels.find(
     (channel) => channel.guildId === message.guild.id,
   );
 
-  if (!targetChannel) {
-    throw new UserFacingError(
-      "Mention a destination channel. Example: `s say #general Hello everyone!`",
-    );
-  }
+  const destination = targetChannel ?? message.channel;
 
-  requireTextChannel(targetChannel);
+  requireTextChannel(destination);
+
+  const contentArgs = targetChannel
+    ? args.filter((arg) => arg !== `<#${targetChannel.id}>`)
+    : args;
+
+  const content = requireMessageContent(contentArgs, "say");
 
   requireBotChannelPermission(
     message.guild,
-    targetChannel,
+    destination,
     PermissionFlagsBits.SendMessages,
     "Send Messages",
   );
 
-  const channelMention = `<#${targetChannel.id}>`;
-  const contentArgs = args.filter((arg) => arg !== channelMention);
-  const content = requireMessageContent(contentArgs, "say");
+  requireBotChannelPermission(
+    message.guild,
+    message.channel,
+    PermissionFlagsBits.ManageMessages,
+    "Manage Messages",
+  );
 
-  await targetChannel.send({
+  await destination.send({
     content,
-    allowedMentions: { parse: [] },
+    allowedMentions: {
+      parse: [],
+      users: message.mentions.users.map((user) => user.id),
+      roles: message.mentions.roles.map((role) => role.id),
+    },
   });
+
+  await message.delete();
 }
 
 export async function handleUtility(message, command, args, client) {
