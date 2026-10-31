@@ -20,7 +20,10 @@ import {
   handleMessage,
   parseCommand,
 } from "../src/command-handler.js";
-import { handleCountingMessage, handleCountingSetup } from "../src/commands/counting.js";
+import {
+  handleCountingMessage,
+  handleCountingSetup,
+} from "../src/commands/counting.js";
 import { handleMarriageCommand } from "../src/commands/marriage.js";
 import { safeErrorMessage } from "../src/logging.js";
 import { selfAssignableRoleProblem } from "../src/permissions.js";
@@ -182,7 +185,11 @@ test("help includes every anime interaction command", async () => {
   }
 });
 
-function makeInteractionMessage({ authorId, targetMember = null, targetUser = null } = {}) {
+function makeInteractionMessage({
+  authorId,
+  targetMember = null,
+  targetUser = null,
+} = {}) {
   const replies = [];
   return {
     author: { id: authorId ?? "20000000000000002" },
@@ -262,7 +269,10 @@ function makeButtonInteraction({
     guildId,
     channelId: interactionChannelId,
     message: { id: messageId },
-    guild: { id: guildId, members: { me: { permissions: { has: () => true } } } },
+    guild: {
+      id: guildId,
+      members: { me: { permissions: { has: () => true } } },
+    },
     channel,
     replied: false,
     deferred: false,
@@ -316,7 +326,9 @@ test("target-required interactions explain missing, invalid, self, and bot targe
 
 test("dance works without a target and mentions the performer", async () => {
   const message = makeInteractionMessage();
-  message.guild = { members: { me: { permissions: { has: () => true } } } };
+  message.guild = {
+    members: { me: { permissions: { has: () => true } } },
+  };
   message.channel = {
     isTextBased: () => true,
     send: () => {},
@@ -335,7 +347,10 @@ test("dance works without a target and mentions the performer", async () => {
   );
 
   const payload = message.replies[0];
-  assert.equal(payload.embeds[0].data.image.url, "https://cdn.gifukai.com/dance/sample.gif");
+  assert.equal(
+    payload.embeds[0].data.image.url,
+    "https://cdn.gifukai.com/dance/sample.gif",
+  );
   assert.match(payload.embeds[0].data.description, /<@20000000000000002>/);
   assert.deepEqual(payload.allowedMentions.users, ["20000000000000002"]);
 });
@@ -372,14 +387,14 @@ test("a targeted interaction includes both mentions and the returned GIF", async
   );
 
   const payload = message.replies[0];
-  assert.equal(payload.embeds[0].data.image.url, "https://cdn.gifukai.com/hug/sample.gif");
+  assert.equal(
+    payload.embeds[0].data.image.url,
+    "https://cdn.gifukai.com/hug/sample.gif",
+  );
   assert.match(payload.embeds[0].data.description, new RegExp(`<@${actorId}>`));
   assert.match(payload.embeds[0].data.description, new RegExp(`<@${targetId}>`));
   assert.deepEqual(payload.allowedMentions.users, [actorId, targetId]);
-  assert.equal(
-    payload.components[0].components[0].data.label,
-    "Hug back",
-  );
+  assert.equal(payload.components[0].components[0].data.label, "Hug back");
 });
 
 test("an unavailable GIF source produces no image embed", async () => {
@@ -529,9 +544,13 @@ function makeCountingMessage({
   guildId: messageGuildId = guildId,
   channelId: messageChannelId = channelId,
   authorId = userId,
-  permissions = new PermissionsBitField(PermissionFlagsBits.AddReactions),
+  permissions = new PermissionsBitField(
+    PermissionFlagsBits.AddReactions | PermissionFlagsBits.ManageMessages,
+  ),
 }) {
   const reactions = [];
+  let deleted = false;
+
   return {
     author: { id: authorId, bot: false },
     content,
@@ -544,12 +563,19 @@ function makeCountingMessage({
       permissionsFor: () => permissions,
     },
     react: async (emoji) => reactions.push(emoji),
+    delete: async () => {
+      deleted = true;
+    },
     reactions,
+    get deleted() {
+      return deleted;
+    },
   };
 }
 
-test("counting rejects incorrect and consecutive-member numbers without changing state", async () => {
+test("counting accepts the next number and deletes incorrect or consecutive-member numbers", async () => {
   const directory = await mkdtemp(join(tmpdir(), "sukuna-counting-test-"));
+
   try {
     const store = await new JsonStore(join(directory, "sukuna-data.json")).load();
     await store.setGuildConfig(guildId, { countingChannelId: channelId });
@@ -566,9 +592,19 @@ test("counting rejects incorrect and consecutive-member numbers without changing
     }
 
     assert.deepEqual(
-      [first, repeated, skipped, second, repeatedAgain, third].map((message) => message.reactions[0]),
-      ["✅", "❌", "❌", "✅", "❌", "✅"],
+      [first, repeated, skipped, second, repeatedAgain, third].map(
+        (message) => message.reactions,
+      ),
+      [["✅"], [], [], ["✅"], [], ["✅"]],
     );
+
+    assert.deepEqual(
+      [first, repeated, skipped, second, repeatedAgain, third].map(
+        (message) => message.deleted,
+      ),
+      [false, true, true, false, true, false],
+    );
+
     assert.equal(store.getGuildConfig(guildId).currentCount, 3);
     assert.equal(store.getGuildConfig(guildId).highestCount, 3);
     assert.equal(store.getGuildConfig(guildId).lastCounterId, userId);
@@ -580,6 +616,7 @@ test("counting rejects incorrect and consecutive-member numbers without changing
 test("simultaneous counting messages accept only one count and servers stay independent", async () => {
   const directory = await mkdtemp(join(tmpdir(), "sukuna-counting-race-test-"));
   const otherGuildId = "10000000000000003";
+
   try {
     const store = await new JsonStore(join(directory, "sukuna-data.json")).load();
     await store.setGuildConfig(guildId, { countingChannelId: channelId });
@@ -595,13 +632,20 @@ test("simultaneous counting messages accept only one count and servers stay inde
         authorId: userId,
       }),
     ];
+
     await Promise.all(messages.map((message) => handleCountingMessage(message, store)));
 
-    assert.deepEqual(
-      messages.slice(0, 2).flatMap((message) => message.reactions).sort(),
-      ["✅", "❌"],
+    assert.equal(
+      messages.slice(0, 2).filter((message) => message.reactions.includes("✅")).length,
+      1,
+    );
+    assert.equal(
+      messages.slice(0, 2).filter((message) => message.deleted).length,
+      1,
     );
     assert.deepEqual(messages[2].reactions, ["✅"]);
+    assert.equal(messages[2].deleted, false);
+
     assert.equal(store.getGuildConfig(guildId).currentCount, 1);
     assert.equal(store.getGuildConfig(otherGuildId).currentCount, 1);
   } finally {
@@ -609,9 +653,10 @@ test("simultaneous counting messages accept only one count and servers stay inde
   }
 });
 
-test("counting ignores non-number messages and does not advance without Add Reactions", async () => {
+test("counting ignores non-number messages and does not advance without required permissions", async () => {
   const directory = await mkdtemp(join(tmpdir(), "sukuna-counting-permissions-test-"));
   const originalConsoleError = console.error;
+
   try {
     const store = await new JsonStore(join(directory, "sukuna-data.json")).load();
     await store.setGuildConfig(guildId, { countingChannelId: channelId });
@@ -619,14 +664,18 @@ test("counting ignores non-number messages and does not advance without Add Reac
     const ordinaryMessage = makeCountingMessage({ content: "hello" });
     await handleCountingMessage(ordinaryMessage, store);
     assert.deepEqual(ordinaryMessage.reactions, []);
+    assert.equal(ordinaryMessage.deleted, false);
 
     const blockedMessage = makeCountingMessage({
       content: "1",
       permissions: new PermissionsBitField(),
     });
+
     console.error = () => {};
     await handleCountingMessage(blockedMessage, store);
+
     assert.deepEqual(blockedMessage.reactions, []);
+    assert.equal(blockedMessage.deleted, false);
     assert.equal(store.getGuildConfig(guildId).currentCount, 0);
   } finally {
     console.error = originalConsoleError;
@@ -637,13 +686,16 @@ test("counting ignores non-number messages and does not advance without Add Reac
 test("counting keeps a saved accepted count when Discord reaction delivery fails", async () => {
   const directory = await mkdtemp(join(tmpdir(), "sukuna-counting-reaction-test-"));
   const originalConsoleError = console.error;
+
   try {
     const store = await new JsonStore(join(directory, "sukuna-data.json")).load();
     await store.setGuildConfig(guildId, { countingChannelId: channelId });
+
     const message = makeCountingMessage({ content: "1" });
     message.react = async () => {
       throw new Error("Reaction request failed");
     };
+
     console.error = () => {};
 
     await assert.doesNotReject(handleCountingMessage(message, store));
@@ -658,27 +710,37 @@ test("counting keeps a saved accepted count when Discord reaction delivery fails
 test("counting setup requires ManageGuild and preserves progress when disabled", async () => {
   const replies = [];
   const configs = [];
+  const requiredBotPermissions =
+    PermissionFlagsBits.AddReactions | PermissionFlagsBits.ManageMessages;
+
   const guild = {
     id: guildId,
     ownerId: "90000000000000009",
     members: {
-      me: { permissions: new PermissionsBitField(PermissionFlagsBits.AddReactions) },
+      me: {
+        permissions: new PermissionsBitField(requiredBotPermissions),
+      },
     },
   };
+
   const channel = {
     id: channelId,
     guild,
     send: () => {},
     isTextBased: () => true,
-    permissionsFor: () => new PermissionsBitField(PermissionFlagsBits.AddReactions),
+    permissionsFor: () => new PermissionsBitField(requiredBotPermissions),
   };
+
   const message = {
     author: { id: userId },
     guild,
-    member: { permissions: new PermissionsBitField(PermissionFlagsBits.ManageGuild) },
+    member: {
+      permissions: new PermissionsBitField(PermissionFlagsBits.ManageGuild),
+    },
     mentions: { channels: { first: () => channel } },
     reply: async (payload) => replies.push(payload),
   };
+
   const store = {
     getGuildConfig: () => ({ currentCount: 7 }),
     setGuildConfig: async (id, patch) => configs.push({ id, patch }),
@@ -686,10 +748,12 @@ test("counting setup requires ManageGuild and preserves progress when disabled",
 
   await handleCountingSetup(message, store);
   await handleCountingSetup(message, store, true);
+
   assert.deepEqual(configs, [
     { id: guildId, patch: { countingChannelId: channelId } },
     { id: guildId, patch: { countingChannelId: null } },
   ]);
+
   assert.match(replies[0].content, /current count is 7/);
   assert.match(replies[1].content, /current and highest counts are saved/);
 
